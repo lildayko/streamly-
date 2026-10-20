@@ -53,9 +53,10 @@ async function getChannelDetails(accessToken: string, channels: YTChannel[]) {
   return details;
 }
 
-async function getChannelVideos(accessToken: string, channel: YTChannel): Promise<Video[]> {
+async function getChannelVideos(accessToken: string, channel: YTChannel, pages: Record<string, string>, cursor = ""): Promise<Video[]> {
   if (!channel.uploadsPlaylistId) return [];
-  const body = await yt("playlistItems", accessToken, { part: "snippet,contentDetails", playlistId: channel.uploadsPlaylistId, maxResults: "50" });
+  const body = await yt("playlistItems", accessToken, { part: "snippet,contentDetails", playlistId: channel.uploadsPlaylistId, maxResults: "50", ...(cursor ? { pageToken: cursor } : {}) });
+  if (body.nextPageToken) pages[channel.id] = String(body.nextPageToken);
   const rows = (body.items || []).map((v: YTRow) => {
     const snippet = v.snippet || {};
     const videoId = String(v.contentDetails?.videoId || snippet.resourceId?.videoId || "");
@@ -93,9 +94,20 @@ export async function GET(request: NextRequest) {
   const refreshToken = request.cookies.get("streamly_yt_refresh")?.value || "";
   let rotatedAccessToken = "";
   if (!accessToken && !refreshToken) return NextResponse.json({ connected: false, items: [], channels: [], message: "Подключи YouTube, чтобы загрузить видео из своих подписок." }, { status: 401 });
+  let cursors: Record<string, string> | null = null;
+  const encodedCursor = request.nextUrl.searchParams.get("cursor");
+  if (encodedCursor) {
+    try {
+      if (encodedCursor.length > 1000000) throw new Error();
+      const parsed = JSON.parse(Buffer.from(encodedCursor, "base64url").toString());
+      if (!parsed || Array.isArray(parsed) || typeof parsed !== "object" || Object.values(parsed).some(v => typeof v !== "string")) throw new Error();
+      cursors = parsed;
+    } catch { return NextResponse.json({ message: "Некорректная страница подписок" }, { status: 400 }); }
+  }
+  const pages: Record<string, string> = {};
   const key = sessionKey(refreshToken || accessToken);
   const cached = getSubscriptions(key);
-  if (cached && request.nextUrl.searchParams.get("refresh") !== "1") return NextResponse.json(cached, { headers: { "Cache-Control": "private, no-store" } });
+  if (cached && !cursors && request.nextUrl.searchParams.get("refresh") !== "1") return NextResponse.json(cached, { headers: { "Cache-Control": "private, no-store" } });
   try {
     let subscriptions: YTChannel[] = [];
     let channels: YTChannel[] = [];
@@ -120,20 +132,22 @@ export async function GET(request: NextRequest) {
     }
     channels = await getChannelDetails(accessToken, subscriptions);
     // Uploads playlists expose more than the five-item search result cap and cost fewer quota units.
-    const videosByChannel: Video[][] = new Array(channels.length);
+    const selectedChannels = cursors ? channels.filter(channel => cursors![channel.id]) : channels;
+    const videosByChannel: Video[][] = new Array(selectedChannels.length);
     let next = 0;
     const failedChannelIds: string[] = [];
     // Bound upstream concurrency even for accounts with thousands of subscriptions.
-    await Promise.all(Array.from({ length: Math.min(5, channels.length) }, async () => {
-      while (next < channels.length) {
+    await Promise.all(Array.from({ length: Math.min(5, selectedChannels.length) }, async () => {
+      while (next < selectedChannels.length) {
         const index = next++;
-        try { videosByChannel[index] = await getChannelVideos(accessToken, channels[index]); }
-        catch { failedChannelIds.push(channels[index].id); videosByChannel[index] = []; }
+        try { videosByChannel[index] = await getChannelVideos(accessToken, selectedChannels[index], pages, cursors?.[selectedChannels[index].id]); }
+        catch { failedChannelIds.push(selectedChannels[index].id); videosByChannel[index] = []; }
       }
     }));
     const items = videosByChannel.flat().sort((a, b) => Date.parse(b.age) - Date.parse(a.age));
-    const data = { connected: true, items, channels, partial: failedChannelIds.length > 0, failedChannelIds, subscriptionChannels: channels.length };
-    if (!failedChannelIds.length) storeSubscriptions(key, data);
+    const nextCursor = Object.keys(pages).length ? Buffer.from(JSON.stringify(pages)).toString("base64url") : "";
+    const data = { nextCursor, connected: true, items, channels, partial: failedChannelIds.length > 0, failedChannelIds, subscriptionChannels: channels.length };
+    if (!cursors && !failedChannelIds.length) storeSubscriptions(key, data);
     const response = NextResponse.json(data, { headers: { "Cache-Control": "private, no-store" } });
     if (rotatedAccessToken) response.cookies.set("streamly_yt_access", rotatedAccessToken, { httpOnly: true, sameSite: "lax", secure: request.nextUrl.protocol === "https:", maxAge: 3600, path: "/" });
     return response;

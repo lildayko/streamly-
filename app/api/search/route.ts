@@ -22,7 +22,7 @@ type Item = {
 
 type ApiRow = {
   id?: string | { videoId?: string }; snippet?: { title?: string; channelTitle?: string; channelId?: string; publishedAt?: string; thumbnails?: Record<string, { url?: string }> };
-  contentDetails?: { duration?: string }; broadcaster_login?: string; display_name?: string; title?: string;
+  contentDetails?: { duration?: string }; user_id?: string; user_login?: string; user_name?: string; broadcaster_login?: string; display_name?: string; title?: string;
   game_name?: string; viewer_count?: number; thumbnail_url?: string; owner_id?: number; access_key?: string;
   owner_name?: string; views?: number; duration?: number; photo_320?: string; photo_800?: string; photo_640?: string; photo_130?: string;
 };
@@ -45,11 +45,12 @@ const safeDate = (value: unknown) => {
   return `${days} дн. назад`;
 };
 
-async function youtubeSearch(q: string, cursor: string, pages: Record<string, string>): Promise<Item[]> {
+async function youtubeSearch(q: string, cursor: string, pages: Record<string, string>, live = false): Promise<Item[]> {
   const key = process.env.YOUTUBE_API_KEY;
   if (!key) throw new Error("YOUTUBE_API_KEY не задан");
   const url = new URL("https://www.googleapis.com/youtube/v3/search");
   url.search = new URLSearchParams({ part: "snippet", type: "video", maxResults: "50", q, key, safeSearch: "moderate" }).toString();
+  if (live) url.searchParams.set("eventType", "live");
   if (cursor) url.searchParams.set("pageToken", cursor);
   const response = await fetch(url, { signal: AbortSignal.timeout(15000), next: { revalidate: 60 } });
   const body = await response.json();
@@ -60,12 +61,12 @@ async function youtubeSearch(q: string, cursor: string, pages: Record<string, st
     if (!id) return [];
     const s = v.snippet ?? {};
     return [{ id: `yt-${id}`, title: text(s.title), creator: text(s.channelTitle) || "YouTube", channelId: text(s.channelId), platform: "YouTube" as const,
-      category: "Видео", views: "YouTube", age: safeDate(s.publishedAt), duration: "Видео",
+      category: "Видео", views: "YouTube", age: safeDate(s.publishedAt), duration: live ? "LIVE" : "Видео", live,
       image: text(s.thumbnails?.high?.url || s.thumbnails?.medium?.url || s.thumbnails?.default?.url), url: `https://www.youtube.com/watch?v=${id}` }];
   });
   // Search results don't include duration; retrieve it so the UI can identify short clips.
   const ids = found.map(v => v.id.slice(3));
-  if (ids.length) {
+  if (ids.length && !live) {
     try {
     const detailsUrl = new URL("https://www.googleapis.com/youtube/v3/videos");
     detailsUrl.search = new URLSearchParams({ part: "contentDetails", id: ids.join(","), key }).toString();
@@ -97,19 +98,19 @@ async function twitchSearch(q: string, cursor: string, pages: Record<string, str
   });
   const tokenBody = await tokenResponse.json();
   if (!tokenResponse.ok || !tokenBody.access_token) throw new Error("Не удалось получить токен Twitch");
-  const url = new URL("https://api.twitch.tv/helix/search/channels");
-  url.search = new URLSearchParams({ query: q, live_only: "true", first: "50" }).toString();
+  const url = new URL(q ? "https://api.twitch.tv/helix/search/channels" : "https://api.twitch.tv/helix/streams");
+  url.search = new URLSearchParams(q ? { query: q, live_only: "true", first: "50" } : { first: "50" }).toString();
   if (cursor) url.searchParams.set("after", cursor);
   const response = await fetch(url, { signal: AbortSignal.timeout(15000), headers: { "Client-Id": clientId, Authorization: `Bearer ${tokenBody.access_token}` }, cache: "no-store" });
   const body = await response.json();
   if (!response.ok) throw new Error(body?.message || "Ошибка Twitch API");
   pages.Twitch = text(body.pagination?.cursor);
   return (body.data ?? []).map((v: ApiRow) => ({
-    id: `tw-${text(v.id || v.broadcaster_login)}`, title: text(v.title) || `${text(v.display_name)} — эфир`,
-    creator: text(v.display_name) || text(v.broadcaster_login) || "Twitch", channelId: text(v.id || v.broadcaster_login), platform: "Twitch" as const,
+    id: `tw-${text(v.user_id || v.id || v.broadcaster_login)}`, title: text(v.title) || `${text(v.user_name || v.display_name)} — эфир`,
+    creator: text(v.user_name || v.display_name) || text(v.user_login || v.broadcaster_login) || "Twitch", channelId: text(v.user_id || v.id || v.broadcaster_login), platform: "Twitch" as const,
     category: text(v.game_name) || "Стримы", views: v.viewer_count === undefined ? "Прямой эфир" : `${compact(v.viewer_count)} зрителей`, age: "В эфире", duration: "LIVE", live: true,
     image: text(v.thumbnail_url).replace("{width}", "640").replace("{height}", "360"),
-    url: `https://www.twitch.tv/${text(v.broadcaster_login)}`,
+    url: `https://www.twitch.tv/${text(v.user_login || v.broadcaster_login)}`,
   }));
 }
 
@@ -139,9 +140,10 @@ async function vkSearch(q: string, cursor: string, pages: Record<string, string>
 
 export async function GET(request: NextRequest) {
   const discover = request.nextUrl.searchParams.get("discover") === "1";
-  const q = (request.nextUrl.searchParams.get("q") || (discover ? "популярные видео" : "")).trim().slice(0, 150);
+  const live = request.nextUrl.searchParams.get("live") === "1";
+  const q = (request.nextUrl.searchParams.get("q") || (discover && !live ? "популярные видео" : "")).trim().slice(0, 150);
   const selected = request.nextUrl.searchParams.get("platform") || "Все платформы";
-  if (!q) return json({ items: [], statuses: {}, configuredCount: 0 });
+  if (!q && !discover && !live) return json({ items: [], statuses: {}, configuredCount: 0 });
 
   let cursors: Record<string, string> = {};
   const encodedCursor = request.nextUrl.searchParams.get("cursor");
@@ -149,22 +151,22 @@ export async function GET(request: NextRequest) {
     try {
       if (encodedCursor.length > 4096) throw new Error();
       const decoded = JSON.parse(Buffer.from(encodedCursor, "base64url").toString());
-      if (decoded.q !== q || decoded.selected !== selected || !decoded.pages || typeof decoded.pages !== "object" || Object.values(decoded.pages).some(x => typeof x !== "string")) throw new Error();
+      if (Boolean(decoded.live) !== live || decoded.q !== q || decoded.selected !== selected || !decoded.pages || typeof decoded.pages !== "object" || Object.values(decoded.pages).some(x => typeof x !== "string")) throw new Error();
       cursors = decoded.pages;
     } catch { return json({ error: "Некорректная страница поиска" }, 400); }
   }
   const pages: Record<string, string> = {};
   const sources: { label: Platform; run: () => Promise<Item[]>; configured: boolean; missing: string }[] = [
-    { label: "YouTube", run: () => youtubeSearch(q, cursors.YouTube || "", pages), configured: Boolean(process.env.YOUTUBE_API_KEY), missing: "Добавь YOUTUBE_API_KEY в .env.local" },
-    { label: "Twitch", run: () => twitchSearch(q, cursors.Twitch || "", pages), configured: Boolean(process.env.TWITCH_CLIENT_ID && process.env.TWITCH_CLIENT_SECRET), missing: "Добавь TWITCH_CLIENT_ID и TWITCH_CLIENT_SECRET в .env.local" },
+    { label: "YouTube", run: () => youtubeSearch(q, cursors.YouTube || "", pages, live), configured: Boolean(process.env.YOUTUBE_API_KEY), missing: "Добавь YOUTUBE_API_KEY в .env.local" },
+    { label: "Twitch", run: () => twitchSearch(discover ? "" : q, cursors.Twitch || "", pages), configured: Boolean(process.env.TWITCH_CLIENT_ID && process.env.TWITCH_CLIENT_SECRET), missing: "Добавь TWITCH_CLIENT_ID и TWITCH_CLIENT_SECRET в .env.local" },
     { label: "VK Видео", run: () => vkSearch(q, cursors["VK Видео"] || "", pages), configured: Boolean(process.env.VK_ACCESS_TOKEN), missing: "Добавь VK_ACCESS_TOKEN в .env.local" },
   ];
-  const chosen = sources.filter((source) => (selected === "Все платформы" || selected === source.label) && (!encodedCursor || Boolean(cursors[source.label])));
+  const chosen = sources.filter((source) => (!live || source.label !== "VK Видео") && (selected === "Все платформы" || selected === source.label) && (!encodedCursor || Boolean(cursors[source.label])));
   let settled;
   try { settled = await Promise.all(chosen.map(async (source) => {
     if (!source.configured) return { label: source.label, items: [] as Item[], status: { configured: false, message: source.missing } };
     try {
-      const result = await cachedSearch(JSON.stringify([q, source.label, cursors[source.label] || ""]), async () => {
+      const result = await cachedSearch(JSON.stringify([q, discover, live, source.label, cursors[source.label] || ""]), async () => {
         const items = await source.run();
         return { items, next: pages[source.label] || "" };
       });
@@ -181,6 +183,6 @@ export async function GET(request: NextRequest) {
   }
   const statuses = Object.fromEntries(settled.map(({ label, status }) => [label, status as IntegrationStatus]));
   const items = settled.flatMap((result) => result.items);
-  const nextCursor = Object.values(pages).some(Boolean) ? Buffer.from(JSON.stringify({ q, selected, pages })).toString("base64url") : "";
+  const nextCursor = Object.values(pages).some(Boolean) ? Buffer.from(JSON.stringify({ q, selected, pages, live })).toString("base64url") : "";
   return json({ items, statuses, nextCursor, configuredCount: Object.values(statuses).filter((s) => s.configured).length });
 }

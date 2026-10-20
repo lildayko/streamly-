@@ -37,3 +37,25 @@ test('кэш подписок изолирован по сессии и не з�
   await GET(request('test-cache-b'));
   expect(calls).toBeGreaterThan(firstCalls);
 });
+
+test('следующая страница подписок передаёт pageToken и возвращает видео за пределами первых 50', async () => {
+  const playlists: URL[] = [];
+  globalThis.fetch = (async (input: URL | RequestInfo) => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith('/subscriptions')) return Response.json({ items: [{ snippet: { resourceId: { channelId: 'paginated' } } }] });
+    if (url.pathname.endsWith('/channels')) return Response.json({ items: [{ id: 'paginated', contentDetails: { relatedPlaylists: { uploads: 'uploads' } } }] });
+    if (url.pathname.endsWith('/playlistItems')) {
+      playlists.push(url);
+      const second = url.searchParams.get('pageToken') === 'page-2';
+      return Response.json({ nextPageToken: second ? undefined : 'page-2', items: [{ contentDetails: { videoId: second ? 'older' : 'newer' }, snippet: { title: second ? 'Старое видео' : 'Новое видео' } }] });
+    }
+    return Response.json({ items: [] });
+  }) as typeof fetch;
+  const first = await (await GET(request('test-subscription-pages'))).json();
+  expect(first.nextCursor).toBeTruthy();
+  const nextRequest = new NextRequest(`http://localhost/api/youtube/recommendations?cursor=${first.nextCursor}`, { headers: { cookie: 'streamly_yt_access=test-subscription-pages' } });
+  const second = await (await GET(nextRequest)).json();
+  expect(playlists[1].searchParams.get('pageToken')).toBe('page-2');
+  expect(second.items[0].title).toBe('Старое видео');
+  expect(second.nextCursor).toBe('');
+});

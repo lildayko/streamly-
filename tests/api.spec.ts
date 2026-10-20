@@ -56,3 +56,40 @@ test('сетевой сбой при чтении длительности не 
   expect(body.items[0].title).toBe('Найденное видео');
   expect(body.statuses.YouTube.message).toBe('Подключено');
 });
+
+test('YouTube в режиме эфиров запрашивает live и помечает карточки трансляциями', async () => {
+  process.env.YOUTUBE_API_KEY = 'test-placeholder';
+  let upstream: URL | undefined;
+  globalThis.fetch = (async (input: URL | RequestInfo) => {
+    upstream = new URL(String(input));
+    return Response.json({ items: [{ id: { videoId: 'live-test' }, snippet: { title: 'Прямой эфир' } }] });
+  }) as typeof fetch;
+  const body = await (await GET(new NextRequest('http://localhost/api/search?discover=1&live=1&platform=YouTube'))).json();
+  expect(upstream!.searchParams.get('eventType')).toBe('live');
+  expect(body.items[0].live).toBe(true);
+  expect(body.items[0].duration).toBe('LIVE');
+});
+test('Twitch discovery использует streams, login и курсор вместо поиска по популярным видео', async () => {
+  const originalId = process.env.TWITCH_CLIENT_ID, originalSecret = process.env.TWITCH_CLIENT_SECRET;
+  process.env.TWITCH_CLIENT_ID = 'test-id'; process.env.TWITCH_CLIENT_SECRET = 'test-secret';
+  const calls: URL[] = [];
+  globalThis.fetch = (async (input: URL | RequestInfo) => {
+    const url = new URL(String(input)); calls.push(url);
+    if (url.hostname === 'id.twitch.tv') return Response.json({ access_token: 'mock-token' });
+    return Response.json({ data: [{ id: 'session-id', user_id: 'user-id', user_login: 'actual_login', user_name: 'Отображаемое имя', title: 'Эфир', viewer_count: 100 }], pagination: { cursor: 'twitch-next' } });
+  }) as typeof fetch;
+  try {
+    const body = await (await GET(new NextRequest('http://localhost/api/search?discover=1&live=1&platform=Twitch'))).json();
+    expect(calls[1].pathname).toBe('/helix/streams');
+    expect(calls[1].searchParams.has('query')).toBe(false);
+    expect(body.items[0].url).toBe('https://www.twitch.tv/actual_login');
+    expect(body.items[0].id).toBe('tw-user-id');
+    expect(body.items[0].live).toBe(true);
+    const next = await (await GET(new NextRequest(`http://localhost/api/search?discover=1&live=1&platform=Twitch&cursor=${body.nextCursor}`))).json();
+    expect(calls[3].searchParams.get('after')).toBe('twitch-next');
+    expect(next.items).toHaveLength(1);
+  } finally {
+    if (originalId === undefined) delete process.env.TWITCH_CLIENT_ID; else process.env.TWITCH_CLIENT_ID = originalId;
+    if (originalSecret === undefined) delete process.env.TWITCH_CLIENT_SECRET; else process.env.TWITCH_CLIENT_SECRET = originalSecret;
+  }
+});

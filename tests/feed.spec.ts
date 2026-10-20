@@ -24,7 +24,6 @@ test('поиск показывает серверные результаты в
   await search(page, 'котики');
   await expect(page.locator('.video-title', { hasText: 'Результат котики' })).toBeVisible();
   await expect(page.locator('.video-title', { hasText: long.title })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Загрузить ещё' }).click();
   await expect(page.locator('.video-title')).toHaveCount(2);
   await expect(page.locator('.video-title', { hasText: 'Вторая страница' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Загрузить ещё' })).toHaveCount(0);
