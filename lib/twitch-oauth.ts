@@ -29,3 +29,29 @@ export const twitchLoginErrors: Record<string, string> = {
   network_error: 'Сервер Streamly не смог связаться с Twitch. Проверь доступ сервера к id.twitch.tv и api.twitch.tv и повтори вход.',
   connect_error: 'Вход Twitch не завершён. Начни новую попытку входа.',
 };
+
+export const twitchOAuthVersion = 'oauth-4';
+export const twitchOAuthStages = ['configuration', 'authorization', 'callback', 'token', 'profile', 'network'] as const;
+// Only fixed OAuth error codes are displayed; never reflect provider descriptions,
+// codes, client secrets, tokens, or arbitrary callback parameters into the page.
+export function twitchAuthorizationError(error: string | null, description: string | null) {
+  const message = `${error || ''} ${description || ''}`.toLowerCase();
+  if (message.includes('redirect')) return 'redirect_mismatch';
+  if (error === 'access_denied') return 'access_denied';
+  if (message.includes('scope')) return 'invalid_scope';
+  if (error === 'unauthorized_client') return 'unauthorized_client';
+  if (message.includes('client')) return 'authorize_client_invalid';
+  if (error === 'unsupported_response_type') return 'unsupported_response_type';
+  if (error === 'invalid_request') return 'invalid_request';
+  if (error === 'server_error' || error === 'temporarily_unavailable') return 'provider_unavailable';
+  return 'authorization_error';
+}
+Object.assign(twitchLoginErrors, {
+  authorize_client_invalid: 'Twitch отклонил Client ID на этапе открытия входа. Проверь Client ID и состояние приложения в Twitch Developer Console. Client Secret на этом шаге ещё не отправляется.',
+  unauthorized_client: 'Twitch не разрешает этому приложению использовать выбранный способ входа. Проверь тип приложения в Twitch Developer Console.',
+  invalid_scope: 'Twitch отклонил разрешение user:read:follows. Проверь, что вход запускается через актуальную версию Streamly и используется приложение Twitch.',
+  unsupported_response_type: 'Twitch отклонил способ входа. Streamly использует Authorization Code Flow; проверь настройки типа приложения Twitch.',
+  invalid_request: 'Twitch отклонил параметры запроса авторизации. Открой диагностику ниже и проверь точный адрес возврата.',
+  provider_unavailable: 'Сервис авторизации Twitch временно недоступен. Повтори вход позже.',
+  authorization_error: 'Twitch отказал до выдачи кода авторизации. Открой диагностику ниже: проблема возникла на странице авторизации Twitch.',
+});

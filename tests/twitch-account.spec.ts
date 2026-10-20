@@ -106,3 +106,25 @@ test('ошибки клиента и отсутствующей сессии р�
   const missing = await callback(new NextRequest('http://localhost/api/twitch/callback?code=code&state=expected'));
   expect(missing.headers.get('location')).toContain('twitch=state_missing');
 });
+
+test('отказ Twitch до подтверждения сохраняет стадию и причину вместо connect_error', async () => {
+  let calls = 0;
+  globalThis.fetch = (async () => { calls++; throw new Error('must not exchange a rejected authorization'); }) as typeof fetch;
+  const response = await callback(new NextRequest('http://localhost/api/twitch/callback?error=invalid_scope&error_description=Invalid+scope%3A+user%3Aread%3Afollows'));
+  const url = new URL(response.headers.get('location')!);
+  expect(url.searchParams.get('twitch')).toBe('invalid_scope');
+  expect(url.searchParams.get('twitch_stage')).toBe('authorization');
+  expect(calls).toBe(0);
+});
+test('ошибка адреса на authorize отличается от ошибки Client ID и не отражает сырые параметры', async () => {
+  const redirect = await callback(new NextRequest('http://localhost/api/twitch/callback?error=invalid_request&error_description=redirect_uri+does+not+match&code=private-code'));
+  expect(new URL(redirect.headers.get('location')!).searchParams.get('twitch')).toBe('redirect_mismatch');
+  expect(redirect.headers.get('location')).not.toContain('private-code');
+  const client = await callback(new NextRequest('http://localhost/api/twitch/callback?error=invalid_client'));
+  expect(new URL(client.headers.get('location')!).searchParams.get('twitch')).toBe('authorize_client_invalid');
+});
+test('неизвестное сообщение провайдера не попадает в URL и страницу', async () => {
+  const response = await callback(new NextRequest('http://localhost/api/twitch/callback?error=unexpected&error_description=private-secret-value'));
+  expect(response.headers.get('location')).toContain('twitch=authorization_error');
+  expect(response.headers.get('location')).not.toContain('private-secret-value');
+});

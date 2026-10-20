@@ -37,3 +37,12 @@ test('ошибка входа Twitch остаётся видимой и объя
   await expect(page.locator('.login-error[role=alert]')).toContainText('Client ID или Client Secret');
   await expect(page.getByRole('link', { name: 'Повторить вход' })).toHaveAttribute('href', '/api/twitch/auth');
 });
+
+test('мгновенный отказ authorize показывает код и ссылку на диагностику, скрывая сырые параметры', async ({ page }) => {
+  await page.route('**/api/twitch/account', route => route.fulfill({ status: 401, json: {} }));
+  await page.route('**/api/youtube/recommendations*', route => route.fulfill({ status: 401, json: {} }));
+  await page.goto('/?twitch=invalid_scope&twitch_stage=authorization');
+  await expect(page.locator('.login-error')).toContainText('oauth-4 · authorization · invalid_scope');
+  await expect(page.getByRole('link', { name: 'Диагностика без ключей ↗' })).toHaveAttribute('href', '/api/twitch/diagnostics');
+  await expect(page).not.toHaveURL(/twitch_stage/);
+});

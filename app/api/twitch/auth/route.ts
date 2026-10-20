@@ -4,10 +4,11 @@ import { twitchOrigin, twitchRedirect } from '@/lib/twitch-oauth';
 export const runtime = 'nodejs';
 export async function GET(request: NextRequest) {
   const clientId = process.env.TWITCH_CLIENT_ID;
-  if (!clientId || !process.env.TWITCH_CLIENT_SECRET) return NextResponse.redirect(new URL('/?twitch=missing_config', request.url));
+  function failure(reason: string) { const home = new URL('/', twitchOrigin(request)); home.searchParams.set('twitch', reason); home.searchParams.set('twitch_stage', 'configuration'); const response = NextResponse.redirect(home); response.headers.set('Cache-Control', 'no-store'); return response; }
+  if (!clientId || !process.env.TWITCH_CLIENT_SECRET) return failure('missing_config');
   let redirect: URL;
   try { redirect = twitchRedirect(request); }
-  catch { return NextResponse.redirect(new URL('/?twitch=redirect_config', request.url)); }
+  catch { return failure('redirect_config'); }
   // Establish the state cookie on the same origin Twitch will return to.
   if (redirect.origin !== twitchOrigin(request)) return NextResponse.redirect(new URL('/api/twitch/auth', redirect.origin));
   const state = randomBytes(32).toString('hex');

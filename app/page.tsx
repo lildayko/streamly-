@@ -1,7 +1,7 @@
  "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { twitchLoginErrors } from "@/lib/twitch-oauth";
+import { twitchLoginErrors, twitchOAuthStages, twitchOAuthVersion } from "@/lib/twitch-oauth";
 import { useInfiniteScroll } from "./hooks/useInfiniteScroll";
 import {
   Activity, Bell, Bookmark, Check, ChevronDown, Compass,
@@ -30,6 +30,7 @@ export default function HomePage() {
   const [twitchFollowing, setTwitchFollowing] = useState<VideoItem[]>([]);
   const [twitchCursor, setTwitchCursor] = useState("");
   const [twitchLoading, setTwitchLoading] = useState(false);
+  const [twitchLoginDiagnostic, setTwitchLoginDiagnostic] = useState("");
   const [twitchLoginError, setTwitchLoginError] = useState("");
   const [twitchMessage, setTwitchMessage] = useState("");
   const [saved, setSaved] = useState<(number | string)[]>([]);
@@ -163,8 +164,14 @@ export default function HomePage() {
       if (params.get("youtube") === "connected") { setYoutubeConnected(true); window.history.replaceState({}, "", window.location.pathname); notify("YouTube-аккаунт подключён"); }
       if (params.has("twitch")) {
         if (params.get("twitch") === "connected") notify("Аккаунт Twitch подключён");
-        else setTwitchLoginError(twitchLoginErrors[params.get("twitch") || ""] || "Вход Twitch не завершён. Начни новую попытку.");
+        else {
+          const code = params.get("twitch") || "";
+          const stage = params.get("twitch_stage") || "";
+          setTwitchLoginError(Object.hasOwn(twitchLoginErrors, code) ? twitchLoginErrors[code] : "Неизвестный результат входа Twitch. Открой диагностику ниже.");
+          setTwitchLoginDiagnostic(`${twitchOAuthVersion} · ${twitchOAuthStages.some(value => value === stage) ? stage : "unknown_stage"} · ${Object.hasOwn(twitchLoginErrors, code) ? code : "unknown_result"}`);
+        }
         params.delete("twitch");
+        params.delete("twitch_stage");
         window.history.replaceState({}, "", `${window.location.pathname}${params.size ? `?${params}` : ""}`);
       }
       const readArray = (raw: string | null) => { try { const value = JSON.parse(raw || "[]"); return Array.isArray(value) ? value : []; } catch { return []; } };
@@ -445,7 +452,7 @@ export default function HomePage() {
         </header>
 
         <div className="content">
-          {twitchLoginError && <div className="login-error" role="alert"><strong>Не удалось подключить Twitch</strong><p>{twitchLoginError}</p><a href="/api/twitch/auth">Повторить вход</a><button onClick={() => setTwitchLoginError("")} aria-label="Закрыть ошибку Twitch">×</button></div>}
+          {twitchLoginError && <div className="login-error" role="alert"><strong>Не удалось подключить Twitch</strong><p>{twitchLoginError}</p><p><code>{twitchLoginDiagnostic}</code></p><a href="/api/twitch/auth">Повторить вход</a><a href="/api/twitch/diagnostics" target="_blank" rel="noreferrer" style={{marginLeft:16}}>Диагностика без ключей ↗</a><button onClick={() => setTwitchLoginError("")} aria-label="Закрыть ошибку Twitch">×</button></div>}
           <section className="welcome-row">
             <div><div className="eyebrow"><span className="eyebrow-spark">✳</span> ТВОЙ МЕДИА-ЦЕНТР</div><h1>Всё интересное.<br/><span>В одном потоке.</span></h1><p className="welcome-copy">Видео и стримы с любимых платформ — собраны для тебя.</p></div>
             <div className="welcome-art" aria-hidden="true"><div className="art-orbit orbit-one"/><div className="art-orbit orbit-two"/><div className="art-core"><Activity size={39}/></div><div className="float-tile tile-play"><Video size={20}/></div><div className="float-tile tile-live"><span/> LIVE</div><div className="float-tile tile-spark"><Sparkles size={17}/></div></div>
