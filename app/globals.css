@@ -55,3 +55,4 @@
 .player-overlay:not(.shorts-player-overlay) .recommendations{max-height:none;overflow:visible;overscroll-behavior:auto;display:block}
 .feed-section{margin-top:24px}
 .connection-dot.unconfigured{background:#77798b}
+.twitch-account{display:flex;align-items:center;gap:8px;padding:10px 0;font-size:11px;flex-wrap:wrap;color:#cbc4e0}.twitch-account button{border:1px solid #49405f;border-radius:6px;background:transparent;color:#bfaaff;padding:5px;font-size:10px}.interests-label{font-size:11px;color:#aaa1bb;align-self:center}.recommendation-explanation{color:#9992a8;font-size:12px;line-height:1.6;margin:0 0 18px}.recommendation-reason{color:#b29bdc;font-size:10px;margin:5px 0;line-height:1.5}a.connect-platform{display:block;text-decoration:none}

@@ -1,6 +1,6 @@
  "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useInfiniteScroll } from "./hooks/useInfiniteScroll";
 import {
   Activity, Bell, Bookmark, Check, ChevronDown, Compass,
@@ -11,7 +11,7 @@ import {
 type Platform = "YouTube" | "Twitch" | "VK Видео";
 type VideoItem = {
   id: number | string; title: string; creator: string; channelId?: string; platform: Platform; category: string;
-  views: string; age: string; duration: string; image: string; live?: boolean; tag?: string; url?: string;
+  views: string; age: string; duration: string; image: string; live?: boolean; tag?: string; url?: string; reason?: string;
 };
 type ApiStatus = { configured: boolean; message: string };
 
@@ -25,6 +25,12 @@ export default function HomePage() {
   const [activeNav, setActiveNav] = useState("Для тебя");
   const [platform, setPlatform] = useState("Все платформы");
   const [query, setQuery] = useState("");
+  const [interests, setInterests] = useState<string[]>([]);
+  const [twitchUser, setTwitchUser] = useState<{id: string; login: string; displayName: string; avatar: string} | null>(null);
+  const [twitchFollowing, setTwitchFollowing] = useState<VideoItem[]>([]);
+  const [twitchCursor, setTwitchCursor] = useState("");
+  const [twitchLoading, setTwitchLoading] = useState(false);
+  const [twitchMessage, setTwitchMessage] = useState("");
   const [saved, setSaved] = useState<(number | string)[]>([]);
   const [savedItems, setSavedItems] = useState<VideoItem[]>([]);
   const [storageReady, setStorageReady] = useState(false);
@@ -42,6 +48,7 @@ export default function HomePage() {
   const [discoveryCursor, setDiscoveryCursor] = useState("");
   const searchRequest = useRef(0);
   const playerRequest = useRef(0);
+  const twitchRequest = useRef(0);
   const shortGesture = useRef({ last: 0, touchY: 0 });
   const [following, setFollowing] = useState<string[]>(["Кирилл играет", "neonfox", "Техно Просто"]);
   const [showPlatforms, setShowPlatforms] = useState(false);
@@ -63,6 +70,57 @@ export default function HomePage() {
   const [subscriptionChannels, setSubscriptionChannels] = useState<{id:string; title:string; thumbnail?:string; description?:string; subscriberCount?:string}[]>([]);
   const [loadingSubscriptions, setLoadingSubscriptions] = useState(false);
   const [subscriptionMessage, setSubscriptionMessage] = useState("");
+
+  const recommendationMode = ["Для тебя", "Shorts"].includes(activeNav) && !selectedChannel;
+  const recommendationProfile = useMemo(() => JSON.stringify({ interests, history: history.slice(0, 100).map(({id,title,category,platform}) => ({id,title,category,platform})), subscribed: [...subscriptionChannels.map(channel => channel.id), ...twitchFollowing.map(item => item.channelId || "")] }), [interests, history, subscriptionChannels, twitchFollowing]);
+  const [feedProfile, setFeedProfile] = useState("{}");
+  useEffect(() => {
+    // Keep the current Shorts/list stable while its player is open.
+    if (!playerVideo) setFeedProfile(recommendationProfile);
+  }, [recommendationProfile, playerVideo]);
+  const loadDiscovery = useCallback((cursor = "") => {
+    if (recommendationMode) return fetch("/api/recommendations", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ ...JSON.parse(feedProfile), platform, cursor }) });
+    const params = new URLSearchParams({ discover: "1", platform });
+    if (liveMode) params.set("live", "1");
+    if (cursor) params.set("cursor", cursor);
+    return fetch(`/api/search?${params}`);
+  }, [platform, liveMode, recommendationMode, feedProfile]);
+
+  const loadTwitch = useCallback(async (cursor = "") => {
+    const requestId = ++twitchRequest.current;
+    setTwitchLoading(true);
+    setTwitchMessage("");
+    try {
+      const accountResponse = await fetch("/api/twitch/account", { cache: "no-store" });
+      const account = await accountResponse.json();
+      if (requestId !== twitchRequest.current) return;
+      if (!accountResponse.ok) {
+        if (accountResponse.status === 401) { setTwitchUser(null); setTwitchFollowing([]); setTwitchCursor(""); }
+        if (accountResponse.status !== 401) setTwitchMessage(account.message || "Ошибка Twitch");
+        return;
+      }
+      setTwitchUser(account.user);
+      const response = await fetch(`/api/twitch/following${cursor ? `?cursor=${encodeURIComponent(cursor)}` : ""}`, { cache: "no-store" });
+      const body = await response.json();
+      if (requestId !== twitchRequest.current) return;
+      if (!response.ok) throw new Error(body.message || "Не удалось загрузить каналы Twitch");
+      setTwitchFollowing(old => unique([...(cursor ? old : []), ...(body.items || [])]));
+      setTwitchCursor(body.nextCursor && body.nextCursor !== cursor ? body.nextCursor : "");
+      if (!body.items?.length && !cursor) setTwitchMessage("Среди отслеживаемых каналов Twitch сейчас нет активных эфиров.");
+    } catch (error) { setTwitchMessage(error instanceof Error ? error.message : "Ошибка Twitch"); if (cursor) setFeedError("Не удалось загрузить следующую страницу Twitch."); }
+    finally { if (requestId === twitchRequest.current) setTwitchLoading(false); }
+  }, []);
+
+  async function disconnectTwitch() {
+    try {
+      const response = await fetch("/api/twitch/disconnect", { method: "POST" });
+      if (!response.ok) throw new Error();
+      ++twitchRequest.current;
+      setTwitchLoading(false);
+      setTwitchUser(null); setTwitchFollowing([]); setTwitchCursor("");
+      notify("Twitch отключён от Streamly");
+    } catch { notify("Не удалось отключить Twitch. Повтори попытку."); }
+  }
 
   const loadYouTubeSubscriptions = useCallback(async (force = false, cursor = "") => {
     setLoadingSubscriptions(true);
@@ -106,7 +164,14 @@ export default function HomePage() {
       const rawHistory = localStorage.getItem("streamly-history");
       const params = new URLSearchParams(window.location.search);
       if (params.get("youtube") === "connected") { setYoutubeConnected(true); window.history.replaceState({}, "", window.location.pathname); notify("YouTube-аккаунт подключён"); }
+      if (params.has("twitch")) {
+        notify(params.get("twitch") === "connected" ? "Аккаунт Twitch подключён" : "Не удалось подключить Twitch. Проверь Redirect URL приложения и повтори вход.");
+        params.delete("twitch");
+        window.history.replaceState({}, "", `${window.location.pathname}${params.size ? `?${params}` : ""}`);
+      }
       const readArray = (raw: string | null) => { try { const value = JSON.parse(raw || "[]"); return Array.isArray(value) ? value : []; } catch { return []; } };
+      const storedInterests = readArray(localStorage.getItem("streamly-interests")).filter(x => typeof x === "string").slice(0, 8);
+      setInterests(storedInterests);
       if (rawFollowing) setFollowing(readArray(rawFollowing).filter(x => typeof x === "string"));
       const validVideos = (raw: string | null) => readArray(raw).filter(x => x && typeof x.title === "string" && typeof x.creator === "string" && typeof x.duration === "string" && ["YouTube", "Twitch", "VK Видео"].includes(x.platform) && (typeof x.id === "string" || typeof x.id === "number"));
       const library = validVideos(localStorage.getItem("streamly-saved-items"));
@@ -116,17 +181,19 @@ export default function HomePage() {
     } catch { /* Ignore invalid local browser data. */ }
     setStorageReady(true);
     void loadYouTubeSubscriptions();
-  }, [loadYouTubeSubscriptions]);
+    void loadTwitch();
+  }, [loadYouTubeSubscriptions, loadTwitch]);
 
   useEffect(() => {
     if (!storageReady) return;
     try {
+      localStorage.setItem("streamly-interests", JSON.stringify(interests));
       localStorage.setItem("streamly-following", JSON.stringify(following));
       localStorage.setItem("streamly-saved", JSON.stringify(saved));
       localStorage.setItem("streamly-saved-items", JSON.stringify(savedItems));
       localStorage.setItem("streamly-history", JSON.stringify(history));
     } catch { /* Storage may be disabled by the browser. */ }
-  }, [following, saved, savedItems, history, storageReady]);
+  }, [following, saved, savedItems, history, interests, storageReady]);
 
   useEffect(() => {
     document.body.style.overflow = playerVideo ? "hidden" : "";
@@ -134,6 +201,7 @@ export default function HomePage() {
   }, [playerVideo]);
 
   useEffect(() => {
+    if (!storageReady) return;
     let cancelled = false;
     const requestId = ++searchRequest.current;
     setFeedError("");
@@ -142,11 +210,10 @@ export default function HomePage() {
     (async () => {
       setSearching(true);
       try {
-        const params = new URLSearchParams({ discover: "1", platform });
-        if (liveMode) params.set("live", "1");
-        const response = await fetch(`/api/search?${params}`);
+        const response = await loadDiscovery();
         const body = await response.json();
         if (!cancelled && requestId === searchRequest.current) {
+          setApiStatuses(body.statuses || {});
           if (!response.ok) throw new Error(body.error || "Не удалось загрузить ленту");
           setDiscovery(body.items || []);
           setDiscoveryCursor(body.nextCursor || "");
@@ -157,13 +224,13 @@ export default function HomePage() {
       } finally { if (!cancelled && requestId === searchRequest.current) setSearching(false); }
     })();
     return () => { cancelled = true; };
-  }, [platform, liveMode]);
+  }, [loadDiscovery, storageReady]);
 
   const feedSource = submittedQuery ? (remoteResults ?? [])
     : activeNav === "Сохранённое" ? savedItems
     : activeNav === "История" ? history
     : selectedChannel ? unique([...accountRecommendations, ...discovery, ...(remoteResults ?? []), ...savedItems, ...history]).filter(v => (v.channelId || v.creator) === selectedChannel.id)
-    : youtubeConnected && (platform === "Все платформы" || platform === "YouTube") && ["Для тебя", "Подписки", "Shorts"].includes(activeNav) ? accountRecommendations
+    : activeNav === "Подписки" ? unique([...accountRecommendations, ...twitchFollowing])
     : discovery;
   const durationSeconds = (value: string) => {
     const parts = (value || "").trim().split(":").map(Number);
@@ -183,11 +250,10 @@ export default function HomePage() {
     if (!submittedQuery && !["История", "Сохранённое", "Канал"].includes(activeNav) && activeNav !== "Shorts" && isShort(v)) return false;
     if (!submittedQuery && activeNav === "Shorts" && !isShort(v)) return false;
     const matchesPlatform = platform === "Все платформы" || v.platform === platform;
-    const matchesNav = Boolean(submittedQuery) || activeNav !== "Подписки" || youtubeConnected || following.includes(v.channelId || v.creator);
     const matchesLive = activeNav !== "В эфире" || v.live;
     const matchesSaved = Boolean(submittedQuery) || activeNav !== "Сохранённое" || saved.includes(v.id);
     const matchesHistory = Boolean(submittedQuery) || activeNav !== "История" || history.some((item) => item.id === v.id);
-    return matchesPlatform && matchesNav && matchesLive && matchesSaved && matchesHistory;
+    return matchesPlatform && matchesLive && matchesSaved && matchesHistory;
   });
 
   function changePlatform(value: string) {
@@ -223,9 +289,10 @@ export default function HomePage() {
       if (q) params.set("q", q); else params.set("discover", "1");
       if (liveMode) params.set("live", "1");
       if (cursor) params.set("cursor", cursor);
-      const response = await fetch(`/api/search?${params}`);
+      const response = !q ? await loadDiscovery(cursor) : await fetch(`/api/search?${params}`);
       const body = await response.json();
       if (requestId !== searchRequest.current) return;
+      setApiStatuses(body.statuses || {});
       if (!response.ok) throw new Error(body.error || "Не удалось выполнить поиск");
       if (!body.items?.length && Object.values(body.statuses || {}).some((status: unknown) => (status as ApiStatus).message !== "Подключено")) {
         setApiStatuses(body.statuses || {});
@@ -298,12 +365,14 @@ export default function HomePage() {
     finally { if (requestId === playerRequest.current) setPlayerSearching(false); }
   }
 
-  const usesSubscriptions = !submittedQuery && youtubeConnected && (platform === "Все платформы" || platform === "YouTube") && ["Для тебя", "Подписки", "Shorts", "Канал"].includes(activeNav);
-  const feedCursor = submittedQuery ? nextCursor : usesSubscriptions ? subscriptionCursor : !["История", "Сохранённое", "Канал"].includes(activeNav) ? discoveryCursor : "";
-  const feedLoading = searching || loadingSubscriptions;
+  const usesSubscriptions = !submittedQuery && youtubeConnected && (platform === "Все платформы" || platform === "YouTube") && ["Подписки", "Канал"].includes(activeNav);
+  const usesTwitchFollowing = !submittedQuery && activeNav === "Подписки" && Boolean(twitchUser) && (platform === "Twitch" || (platform === "Все платформы" && !subscriptionCursor));
+  const feedCursor = submittedQuery ? nextCursor : usesTwitchFollowing ? twitchCursor : usesSubscriptions ? subscriptionCursor : !["История", "Сохранённое", "Канал"].includes(activeNav) ? discoveryCursor : "";
+  const feedLoading = searching || loadingSubscriptions || twitchLoading;
   function loadMoreFeed() {
     if (feedLoading || !feedCursor) return;
-    if (usesSubscriptions) { setFeedError(""); void loadYouTubeSubscriptions(false, subscriptionCursor); }
+    if (usesTwitchFollowing) { setFeedError(""); void loadTwitch(twitchCursor); }
+    else if (usesSubscriptions) { setFeedError(""); void loadYouTubeSubscriptions(false, subscriptionCursor); }
     else void runSearch(true);
   }
   const feedEnd = useInfiniteScroll(feedCursor, feedLoading, !feedError && !playerVideo, loadMoreFeed);
@@ -330,7 +399,7 @@ export default function HomePage() {
     { label: "История", icon: Activity },
     { label: "Сохранённое", icon: Bookmark },
   ];
-  const categories = ["Все", "Игры", "Технологии", "Музыка", "Творчество", "Документальное"];
+  const categories = ["Игры", "Технологии", "Музыка", "Наука", "Путешествия", "Спорт"];
 
   return (
     <main className="app-shell">
@@ -341,6 +410,7 @@ export default function HomePage() {
         </a>
         <div className="workspace-label">ТВОЁ ПРОСТРАНСТВО</div>
         <a href="/api/youtube/auth" className="nav-item" style={{margin:"8px 0",textDecoration:"none",color:"inherit"}}><span className="platform-icon yt">▶</span>{youtubeConnected ? "YouTube подключён" : "Подключить YouTube"}</a>
+        {twitchUser ? <div className="twitch-account"><span className="platform-icon tw">▰</span><span>Twitch · {twitchUser.displayName || twitchUser.login}</span><button onClick={() => void disconnectTwitch()} aria-label="Отключить Twitch">Отключить</button></div> : <a href="/api/twitch/auth" className="nav-item" style={{textDecoration:"none",color:"inherit"}}><span className="platform-icon tw">▰</span>Подключить Twitch</a>}
         <nav className="main-nav">
           {navItems.map(({ label, icon: Icon }) => (
             <button key={label} className={`nav-item ${activeNav === label ? "active" : ""}`} onClick={() => { setActiveNav(label); setSelectedChannel(null); setSubmittedQuery(""); setQuery(""); ++searchRequest.current; setSearching(false); setMobileMenu(false); }}>
@@ -357,7 +427,7 @@ export default function HomePage() {
         <button className={`platform-row ${platform === "YouTube" ? "platform-selected" : ""}`} onClick={() => changePlatform(platform === "YouTube" ? "Все платформы" : "YouTube")}><span className="platform-icon yt">▶</span><span>YouTube</span><span className={`connection-dot ${apiStatuses["YouTube"]?.message === "Подключено" ? "connected" : "unconfigured"}`}/></button>
         <button className={`platform-row ${platform === "Twitch" ? "platform-selected" : ""}`} onClick={() => changePlatform(platform === "Twitch" ? "Все платформы" : "Twitch")}><span className="platform-icon tw">▰</span><span>Twitch</span><span className={`connection-dot ${apiStatuses["Twitch"]?.message === "Подключено" ? "connected" : "unconfigured"}`}/></button>
         <button className={`platform-row ${platform === "VK Видео" ? "platform-selected" : ""}`} onClick={() => changePlatform(platform === "VK Видео" ? "Все платформы" : "VK Видео")}><span className="platform-icon vk">ᴠκ</span><span>VK Видео</span><span className={`connection-dot ${apiStatuses["VK Видео"]?.message === "Подключено" ? "connected" : "unconfigured"}`}/></button>
-        <button className="connect-platform" onClick={() => notify("Подключение аккаунтов появится после настройки API.")}><span>+</span> Подключить платформу</button>
+        <a className="connect-platform" href="/api/twitch/auth"><span>+</span> Подключить Twitch</a>
         <div className="sidebar-bottom">
           <div className="upgrade-card">
             <div className="upgrade-icon"><Sparkles size={17}/></div>
@@ -396,12 +466,16 @@ export default function HomePage() {
               <div className="shorts-rail">{shorts.map((v, i) => <button className="short-card" key={v.id} onClick={() => { setShortsIndex(i); void openVideo(v); }}><img src={v.image} alt=""/><span className="short-play">▶</span><strong>{v.title}</strong><small>{v.creator}</small></button>)}</div>
             </section>}
             <div className="filter-row">
-              {categories.map((cat) => <button key={cat} className={`filter-chip ${((cat === "Все" && !categories.slice(1).includes(platform)) || cat === platform) ? "selected" : ""}`} onClick={() => { if (cat === "Все") changePlatform("Все платформы"); else { setQuery(""); setActiveNav("Для тебя"); setSelectedChannel(null); notify(`Категория «${cat}» доступна в демо через поиск.`); setQuery(cat); void runSearch(false, cat); } }}>{cat}</button>)}
+              {recommendationMode && !submittedQuery && <span className="interests-label">Твои интересы:</span>}
+              {categories.map(cat => <button key={cat} className={`filter-chip ${interests.includes(cat) && recommendationMode ? "selected" : ""}`} aria-pressed={recommendationMode ? interests.includes(cat) : undefined} onClick={() => {
+                if (recommendationMode && !submittedQuery) setInterests(old => old.includes(cat) ? old.filter(item => item !== cat) : [...old, cat].slice(-8));
+                else { setQuery(cat); void runSearch(false, cat); }
+              }}>{cat}</button>)}
               <button className="filter-platform" onClick={() => setShowPlatforms(!showPlatforms)}><Tv2 size={15}/> {platform} <ChevronDown size={14}/></button>
             </div>
 
             {Object.keys(apiStatuses).length > 0 && <div style={{display:"flex",gap:8,flexWrap:"wrap",margin:"8px 0 16px",fontSize:12,color:"var(--muted, #999)"}}>{Object.entries(apiStatuses).map(([name,status]) => <span key={name} style={{border:"1px solid rgba(255,255,255,.12)",borderRadius:999,padding:"6px 10px"}}><span style={{color:status.configured && status.message === "Подключено" ? "#55d6a0" : "#f0b36c"}}>●</span> {name}: {status.message}</span>)}</div>}
-            {activeNav === "Подписки" && !youtubeConnected && <div className="empty-state"><h3>Подключи свой YouTube</h3><p>Streamly загрузит подписки и будет подгружать видео при прокрутке.</p><a className="primary-button" href="/api/youtube/auth">Подключить YouTube</a>{subscriptionMessage && <p>{subscriptionMessage}</p>}</div>}
+            {activeNav === "Подписки" && !youtubeConnected && !twitchUser && <div className="empty-state"><h3>Подключи YouTube или Twitch</h3><p>Streamly загрузит подписки и будет подгружать видео при прокрутке.</p><a className="primary-button" href="/api/youtube/auth">Подключить YouTube</a><a className="primary-button" href="/api/twitch/auth">Подключить Twitch</a>{subscriptionMessage && <p>{subscriptionMessage}</p>}</div>}
               {activeNav === "Подписки" && !selectedChannel && youtubeConnected && <section className="subscribed-channels">
                 <div className="channel-list-heading"><h3>Твои каналы</h3><span>{subscriptionChannels.length} подписок</span><button onClick={() => void loadYouTubeSubscriptions(true)} disabled={loadingSubscriptions}>{loadingSubscriptions ? "Обновляем…" : "Обновить"}</button></div>
                 {subscriptionMessage && <p className="subscription-message" role="status">{subscriptionMessage}</p>}
@@ -411,6 +485,8 @@ export default function HomePage() {
                 </button>)}</div>
               </section>}
 
+            {activeNav === "Подписки" && twitchUser && <div className="channel-list-heading"><h3>Каналы Twitch в эфире</h3><button disabled={twitchLoading} onClick={() => void loadTwitch()}>{twitchLoading ? "Обновляем…" : "Обновить Twitch"}</button>{twitchMessage && <p role="status">{twitchMessage}</p>}</div>}
+            {recommendationMode && !submittedQuery && <p className="recommendation-explanation">{interests.length || history.length ? "Подборка по твоим интересам и просмотрам — с новыми авторами вне подписок." : "Открывай новых авторов. Выбери интересы или смотри видео — подборка станет персональнее."}</p>}
             {filtered.length > 0 ? <>
               {selectedChannel && <div className="channel-heading"><h2>{selectedChannel.name}</h2><p>Канал · {filtered.length} видео из подписок/результатов</p><button onClick={() => setSelectedChannel(null)}>← Назад к каналам</button></div>}
               <div className="video-grid">
@@ -425,7 +501,7 @@ export default function HomePage() {
                 </button>
                 <div className="video-info">
                   <button className="creator-avatar" onClick={() => {setSelectedChannel({id: v.channelId || v.creator, name: v.creator}); setSubmittedQuery(""); setQuery(""); setActiveNav("Канал");}}>{v.creator.slice(0,1).toUpperCase()}</button>
-                  <div className="video-copy"><button className="video-title" onClick={() => openVideo(v)}>{v.title}</button><button className="creator-name" onClick={() => {setSelectedChannel({id: v.channelId || v.creator, name: v.creator}); setSubmittedQuery(""); setQuery(""); setActiveNav("Канал");}}>{v.creator}</button><button className="creator-follow" style={{display:"block",border:0,background:"transparent",color:"var(--accent, #b5a0ff)",padding:"3px 0",cursor:"pointer",fontSize:12}} onClick={() => toggleFollow(v.creator, v.channelId)}>{following.includes(v.channelId || v.creator) ? "Вы подписаны" : "+ Следить в Streamly"}</button><div className="video-meta"><span>{v.views}</span><span className="meta-dot">·</span><span>{v.age}</span></div></div>
+                  <div className="video-copy"><button className="video-title" onClick={() => openVideo(v)}>{v.title}</button><button className="creator-name" onClick={() => {setSelectedChannel({id: v.channelId || v.creator, name: v.creator}); setSubmittedQuery(""); setQuery(""); setActiveNav("Канал");}}>{v.creator}</button><button className="creator-follow" style={{display:"block",border:0,background:"transparent",color:"var(--accent, #b5a0ff)",padding:"3px 0",cursor:"pointer",fontSize:12}} onClick={() => toggleFollow(v.creator, v.channelId)}>{following.includes(v.channelId || v.creator) ? "Вы подписаны" : "+ Следить в Streamly"}</button>{v.reason && <p className="recommendation-reason">{v.reason}</p>}<div className="video-meta"><span>{v.views}</span><span className="meta-dot">·</span><span>{v.age}</span></div></div>
                   <button className={`save-button ${saved.includes(v.id) ? "is-saved" : ""}`} aria-label="Сохранить видео" onClick={() => toggleSave(v.id)}>{saved.includes(v.id) ? <Heart size={17} fill="currentColor"/> : <Bookmark size={17}/>}</button>
                 </div>
               </article>)}

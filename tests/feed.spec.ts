@@ -12,6 +12,7 @@ async function setup(page: Page) {
     if (q === 'slow') await new Promise(resolve => setTimeout(resolve, 500));
     await route.fulfill({ json: { items: q ? [video('yt-result', `Результат ${q}`), ...(url.searchParams.has('cursor') ? [video('yt-page2', 'Вторая страница')] : [])] : [video('yt-public', 'Общая лента')], statuses: { YouTube: { configured: true, message: 'Подключено' } }, nextCursor: url.searchParams.has('cursor') ? '' : 'next' } });
   });
+  await page.route('**/api/recommendations', route => route.fulfill({ json: { items: [long, short, unknown], nextCursor: '', statuses: {} } }));
   await page.goto('/');
   await expect(page.locator('.video-title', { hasText: long.title })).toBeVisible();
 }
@@ -39,7 +40,7 @@ test('сохранённое переживает смену выдачи и п�
   await page.getByRole('button', { name: 'Сохранённое', exact: true }).click();
   await expect(page.locator('.video-title', { hasText: long.title })).toBeVisible();
 });
-test('Shorts использует подписки; неизвестная длительность остаётся в основной ленте', async ({ page }) => {
+test('Shorts использует рекомендации; неизвестная длительность остаётся в основной ленте', async ({ page }) => {
   await setup(page);
   await expect(page.locator('.video-title', { hasText: unknown.title })).toBeVisible();
   await expect(page.locator('.video-title', { hasText: short.title })).toHaveCount(0);

@@ -1,6 +1,7 @@
 import { test, expect, Page } from '@playwright/test';
 const video = (id: string, title: string) => ({ id, title, duration: '12:00', creator: 'Автор', channelId: 'c', platform: 'YouTube', category: '', views: '', age: '', image: '', url: 'https://youtube.com/watch?v=abc' });
 async function base(page: Page) {
+  await page.route('**/api/recommendations', route => route.fulfill({ json: { items: [video('yt-main', 'Основное видео')], nextCursor: '', statuses: {} } }));
   await page.route('https://**/*', route => route.abort());
   await page.route('**/api/youtube/recommendations*', route => route.fulfill({ status: 401, json: { connected: false } }));
 }
@@ -46,6 +47,7 @@ test('подписки продолжаются за пределами перв
     return route.fulfill({ json: { connected: true, channels: [], items: second ? [video('yt-51', 'Видео 51')] : Array.from({ length: 50 }, (_, i) => video(`yt-${i}`, `Видео ${i}`)), nextCursor: second ? '' : 'next' } });
   });
   await page.goto('/');
+  await page.getByRole('button', { name: 'Подписки', exact: true }).click();
   await expect(page.locator('.video-card')).toHaveCount(50);
   await page.getByTestId('feed-end').scrollIntoViewIfNeeded();
   await expect(page.locator('.video-title', { hasText: 'Видео 51' })).toBeVisible();
@@ -53,6 +55,7 @@ test('подписки продолжаются за пределами перв
 });
 test('отсутствующие ключи Twitch показаны пользователю, а не как подключённая платформа', async ({ page }) => {
   await base(page);
+  await page.route('**/api/recommendations', route => route.fulfill({ status: 503, json: { error: 'Проверь подключение платформ.', statuses: { Twitch: { configured: false, message: 'Добавь TWITCH_CLIENT_ID и TWITCH_CLIENT_SECRET в .env.local' } } } }));
   await page.route('**/api/search?**', route => route.fulfill({ json: { items: [], statuses: { Twitch: { configured: false, message: 'Добавь TWITCH_CLIENT_ID и TWITCH_CLIENT_SECRET в .env.local' } } } }));
   await page.goto('/');
   await page.locator('.platform-row').filter({ hasText: 'Twitch' }).click();
