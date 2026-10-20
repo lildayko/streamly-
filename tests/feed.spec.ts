@@ -14,6 +14,7 @@ async function setup(page: Page) {
   });
   await page.route('**/api/recommendations', route => route.fulfill({ json: { items: [long, short, unknown], nextCursor: '', statuses: {} } }));
   await page.goto('/');
+  await page.getByRole('button', { name: 'Подписки', exact: true }).click();
   await expect(page.locator('.video-title', { hasText: long.title })).toBeVisible();
 }
 async function search(page: Page, q: string) {
@@ -40,7 +41,7 @@ test('сохранённое переживает смену выдачи и п�
   await page.getByRole('button', { name: 'Сохранённое', exact: true }).click();
   await expect(page.locator('.video-title', { hasText: long.title })).toBeVisible();
 });
-test('Shorts использует рекомендации; неизвестная длительность остаётся в основной ленте', async ({ page }) => {
+test('Shorts использует видео подписок; неизвестная длительность остаётся в основной ленте', async ({ page }) => {
   await setup(page);
   await expect(page.locator('.video-title', { hasText: unknown.title })).toBeVisible();
   await expect(page.locator('.video-title', { hasText: short.title })).toHaveCount(0);

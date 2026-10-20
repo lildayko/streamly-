@@ -38,6 +38,7 @@ export function saveTwitchSession(response: NextResponse, session: TwitchSession
   const options = { httpOnly: true, sameSite: 'lax' as const, secure: request.nextUrl.protocol === 'https:', path: '/' };
   response.cookies.set('streamly_tw_access', session.access, { ...options, maxAge: session.expires });
   if (session.refresh) response.cookies.set('streamly_tw_refresh', session.refresh, { ...options, maxAge: 60 * 60 * 24 * 365 });
+  else response.cookies.delete('streamly_tw_refresh');
   return response;
 }
 export function twitchError(error: unknown) {

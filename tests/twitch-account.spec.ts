@@ -27,7 +27,7 @@ test('callback с неправильным state не обращается к п
   let calls = 0;
   globalThis.fetch = (async () => { calls++; throw new Error(); }) as typeof fetch;
   const response = await callback(new NextRequest('http://localhost/api/twitch/callback?code=code&state=wrong', { headers: { cookie: 'streamly_tw_oauth_state=expected' } }));
-  expect(response.headers.get('location')).toContain('connect_error');
+  expect(response.headers.get('location')).toContain('state_mismatch');
   expect(calls).toBe(0);
 });
 test('callback обменивает code и сохраняет токены только в HttpOnly cookies', async () => {
@@ -73,4 +73,36 @@ test('отключение отклоняет чужой origin и удаляе�
   const response = await disconnect(new NextRequest('http://localhost/api/twitch/disconnect', { method: 'POST', headers: { origin: 'http://localhost' } }));
   expect(response.status).toBe(200);
   expect(response.cookies.get('streamly_tw_access')?.value).toBe('');
+});
+
+test('вход с другого hostname сначала переходит на домен callback, до установки state', async () => {
+  const previous = process.env.TWITCH_REDIRECT_URI;
+  process.env.TWITCH_REDIRECT_URI = 'http://localhost:3000/api/twitch/callback';
+  try {
+    const response = await auth(new NextRequest('http://127.0.0.1:3000/api/twitch/auth', { headers: { host: '127.0.0.1:3000' } }));
+    expect(response.headers.get('location')).toBe('http://localhost:3000/api/twitch/auth');
+    expect(response.cookies.get('streamly_tw_oauth_state')).toBeUndefined();
+  } finally { if (previous === undefined) delete process.env.TWITCH_REDIRECT_URI; else process.env.TWITCH_REDIRECT_URI = previous; }
+});
+test('token exchange использует точный redirect URI, сохранённый в начале входа', async () => {
+  let redirect = '';
+  globalThis.fetch = (async (input, options) => {
+    if (String(input).includes('/oauth2/token')) {
+      redirect = new URLSearchParams(String(options?.body)).get('redirect_uri') || '';
+      return Response.json({ access_token: 'test-access', expires_in: 1000 });
+    }
+    return Response.json({ data: [user] });
+  }) as typeof fetch;
+  const response = await callback(new NextRequest('http://localhost/api/twitch/callback?code=code&state=expected', { headers: { cookie: 'streamly_tw_oauth_state=expected; streamly_tw_oauth_redirect=http%3A%2F%2Flocalhost%3A3000%2Fapi%2Ftwitch%2Fcallback' } }));
+  expect(redirect).toBe('http://localhost:3000/api/twitch/callback');
+  expect(response.headers.get('location')).toContain('twitch=connected');
+  expect(response.cookies.get('streamly_tw_refresh')?.value).toBe('');
+});
+test('ошибки клиента и отсутствующей сессии различаются и не раскрывают секреты', async () => {
+  globalThis.fetch = (async () => Response.json({ message: 'invalid client secret' }, { status: 400 })) as typeof fetch;
+  const response = await callback(new NextRequest('http://localhost/api/twitch/callback?code=code&state=expected', { headers: { cookie: 'streamly_tw_oauth_state=expected' } }));
+  expect(response.headers.get('location')).toContain('twitch=invalid_client');
+  expect(response.headers.get('location')).not.toContain('test-secret');
+  const missing = await callback(new NextRequest('http://localhost/api/twitch/callback?code=code&state=expected'));
+  expect(missing.headers.get('location')).toContain('twitch=state_missing');
 });

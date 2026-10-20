@@ -3,7 +3,7 @@ const video = (id: string, title: string) => ({ id, title, duration: '12:00', cr
 async function base(page: Page) {
   await page.route('**/api/recommendations', route => route.fulfill({ json: { items: [video('yt-main', 'Основное видео')], nextCursor: '', statuses: {} } }));
   await page.route('https://**/*', route => route.abort());
-  await page.route('**/api/youtube/recommendations*', route => route.fulfill({ status: 401, json: { connected: false } }));
+  await page.route('**/api/youtube/recommendations*', route => route.fulfill({ json: { connected: true, channels: [], items: [video('yt-main', 'Основное видео')] } }));
 }
 test('выбор Twitch загружает трансляции; плеер использует login и текущий parent', async ({ page }) => {
   await base(page);
@@ -32,6 +32,8 @@ test('в плеере доступны все рекомендации и сле
     return route.fulfill({ json: { items: inPlayer ? Array.from({ length: 30 }, (_, i) => video(`yt-${second ? 100 + i : i}`, `Рекомендация ${second ? 100 + i : i}`)) : [video('yt-main', 'Основное видео')], nextCursor: inPlayer && !second ? 'next' : '', statuses: {} } });
   });
   await page.goto('/');
+  await page.getByRole('button', { name: 'Подписки', exact: true }).click();
+  await page.getByRole('button', { name: 'Подписки', exact: true }).click();
   await page.locator('.video-title').click();
   await expect(page.locator('.recommendation')).toHaveCount(30);
   await page.getByTestId('player-end').scrollIntoViewIfNeeded();
@@ -58,6 +60,7 @@ test('отсутствующие ключи Twitch показаны пользо
   await page.route('**/api/recommendations', route => route.fulfill({ status: 503, json: { error: 'Проверь подключение платформ.', statuses: { Twitch: { configured: false, message: 'Добавь TWITCH_CLIENT_ID и TWITCH_CLIENT_SECRET в .env.local' } } } }));
   await page.route('**/api/search?**', route => route.fulfill({ json: { items: [], statuses: { Twitch: { configured: false, message: 'Добавь TWITCH_CLIENT_ID и TWITCH_CLIENT_SECRET в .env.local' } } } }));
   await page.goto('/');
+  await page.getByRole('button', { name: 'В эфире', exact: true }).click();
   await page.locator('.platform-row').filter({ hasText: 'Twitch' }).click();
   await expect(page.getByText(/Twitch: Добавь TWITCH_CLIENT_ID/)).toBeVisible();
   await expect(page.locator('.platform-row').filter({ hasText: 'Twitch' }).locator('.connection-dot')).toHaveClass(/unconfigured/);

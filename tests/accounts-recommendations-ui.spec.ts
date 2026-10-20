@@ -1,24 +1,18 @@
 import { test, expect } from '@playwright/test';
 const video = (id: string, title: string, channelId: string) => ({ id, title, channelId, creator: channelId, platform: 'YouTube', category: 'Наука', duration: '10:00', image: '', views: '', age: '' });
-test('Для тебя открывает новых авторов, а Подписки сохраняют свои каналы; интересы сохраняются', async ({ page }) => {
-  const profiles: { interests: string[] }[] = [];
+test('главная YouTube открывается на YouTube и не подменяется публичной подборкой; теги и Plus отсутствуют', async ({ page }) => {
+  let recommendationRequests = 0;
   await page.route('**/api/twitch/account', route => route.fulfill({ status: 401, json: {} }));
-  await page.route('**/api/youtube/recommendations*', route => route.fulfill({ json: { connected: true, items: [video('yt-own', 'Мой канал', 'own')], channels: [{ id: 'own', title: 'Мой канал' }] } }));
-  await page.route('**/api/search?**', route => route.fulfill({ json: { items: [], statuses: {} } }));
-  await page.route('**/api/recommendations', route => {
-    profiles.push(route.request().postDataJSON());
-    return route.fulfill({ json: { items: [video('yt-new', 'Новый автор', 'outside')], nextCursor: '', statuses: {} } });
-  });
+  await page.route('**/api/youtube/recommendations*', route => route.fulfill({ json: { connected: true, items: [video('yt-own', 'Мой канал', 'own')], channels: [] } }));
+  await page.route('**/api/recommendations', route => { recommendationRequests++; return route.fulfill({ json: { items: [] } }); });
   await page.goto('/');
-  await expect(page.locator('.video-title', { hasText: 'Новый автор' })).toBeVisible();
-  await expect(page.locator('.video-title', { hasText: 'Мой канал' })).toHaveCount(0);
-  await page.getByRole('button', { name: 'Наука', exact: true }).click();
-  await expect.poll(() => profiles.at(-1)?.interests.includes('Наука')).toBe(true);
-  await expect(page.getByRole('button', { name: 'Наука', exact: true })).toHaveAttribute('aria-pressed', 'true');
+  await expect(page.getByRole('link', { name: 'Открыть мою главную YouTube ↗' })).toHaveAttribute('href', 'https://www.youtube.com/');
+  expect(recommendationRequests).toBe(0);
+  await expect(page.locator('.video-title')).toHaveCount(0);
+  await expect(page.locator('.upgrade-card')).toHaveCount(0);
+  await expect(page.locator('.filter-chip')).toHaveCount(0);
   await page.getByRole('button', { name: 'Подписки', exact: true }).click();
   await expect(page.locator('.video-title', { hasText: 'Мой канал' })).toBeVisible();
-  await page.reload();
-  await expect(page.getByRole('button', { name: 'Наука', exact: true })).toHaveAttribute('aria-pressed', 'true');
 });
 test('привязанный Twitch показывает имя, эфиры в Подписках и позволяет отключиться', async ({ page }) => {
   await page.route('**/api/youtube/recommendations*', route => route.fulfill({ status: 401, json: {} }));
@@ -34,4 +28,12 @@ test('привязанный Twitch показывает имя, эфиры в �
   await page.getByRole('button', { name: 'Отключить Twitch' }).click();
   await expect(page.locator('.twitch-account')).toHaveCount(0);
   await expect(page.locator('.video-title', { hasText: 'Эфир друга' })).toHaveCount(0);
+});
+
+test('ошибка входа Twitch остаётся видимой и объясняет причину вместо общего совета про Redirect URL', async ({ page }) => {
+  await page.route('**/api/twitch/account', route => route.fulfill({ status: 401, json: {} }));
+  await page.route('**/api/youtube/recommendations*', route => route.fulfill({ status: 401, json: {} }));
+  await page.goto('/?twitch=invalid_client');
+  await expect(page.locator('.login-error[role=alert]')).toContainText('Client ID или Client Secret');
+  await expect(page.getByRole('link', { name: 'Повторить вход' })).toHaveAttribute('href', '/api/twitch/auth');
 });
