@@ -1,12 +1,13 @@
 import { test, expect } from '@playwright/test';
 const video = (id: string, title: string, channelId: string) => ({ id, title, channelId, creator: channelId, platform: 'YouTube', category: 'Наука', duration: '10:00', image: '', views: '', age: '' });
-test('главная YouTube открывается на YouTube и не подменяется публичной подборкой; теги и Plus отсутствуют', async ({ page }) => {
+test('главная предлагает импорт персональной ленты без публичной подмены; теги и Plus отсутствуют', async ({ page }) => {
   let recommendationRequests = 0;
   await page.route('**/api/twitch/account', route => route.fulfill({ status: 401, json: {} }));
   await page.route('**/api/youtube/recommendations*', route => route.fulfill({ json: { connected: true, items: [video('yt-own', 'Мой канал', 'own')], channels: [] } }));
   await page.route('**/api/recommendations', route => { recommendationRequests++; return route.fulfill({ json: { items: [] } }); });
   await page.goto('/');
-  await expect(page.getByRole('link', { name: 'Открыть мою главную YouTube ↗' })).toHaveAttribute('href', 'https://www.youtube.com/');
+  await expect(page.getByRole('button', { name: 'Импортировать мою ленту' })).toBeVisible();
+  await expect(page.getByRole('link', { name: 'Скачай расширение' })).toHaveAttribute('href', '/streamly-youtube-bridge.zip');
   expect(recommendationRequests).toBe(0);
   await expect(page.locator('.video-title')).toHaveCount(0);
   await expect(page.locator('.upgrade-card')).toHaveCount(0);

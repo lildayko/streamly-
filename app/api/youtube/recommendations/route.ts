@@ -6,7 +6,7 @@ export const runtime = "nodejs";
 
 type YTRow = { id: string; snippet?: { resourceId?: { channelId?: string; videoId?: string }; title?: string; description?: string; publishedAt?: string; thumbnails?: Record<string, { url?: string }> }; contentDetails?: { relatedPlaylists?: { uploads?: string }; videoId?: string; duration?: string }; statistics?: { subscriberCount?: string } };
 type YTChannel = { id: string; title: string; uploadsPlaylistId?: string; thumbnail?: string; description?: string; subscriberCount?: string };
-type Video = { id: string; title: string; creator: string; channelId: string; platform: string; category: string; views: string; age: string; duration: string; image: string; url: string };
+type Video = { id: string; title: string; creator: string; channelId: string; channelAvatar?: string; platform: string; category: string; views: string; age: string; duration: string; image: string; url: string };
 
 async function yt(path: string, accessToken: string, params: Record<string, string>) {
   const url = new URL(`https://www.googleapis.com/youtube/v3/${path}`);
@@ -65,7 +65,7 @@ async function getChannelVideos(accessToken: string, channel: YTChannel, pages: 
       rawId: videoId,
       item: {
         id: `yt-${videoId}`, title: String(snippet.title || "Видео YouTube"), creator: channel.title,
-        channelId: channel.id, platform: "YouTube", category: "Подписки", views: "YouTube",
+        channelId: channel.id, channelAvatar: channel.thumbnail, platform: "YouTube", category: "Подписки", views: "YouTube",
         age: String(snippet.publishedAt || ""), duration: "",
         image: String(snippet.thumbnails?.high?.url || snippet.thumbnails?.medium?.url || snippet.thumbnails?.default?.url || channel.thumbnail || ""),
         url: `https://www.youtube.com/watch?v=${videoId}`,

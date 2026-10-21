@@ -2,6 +2,11 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { twitchLoginErrors, twitchOAuthStages, twitchOAuthVersion } from "@/lib/twitch-oauth";
+import { YouTubeHomeFeed } from "./components/YouTubeHomeFeed";
+import { YouTubeComments } from "./components/YouTubeComments";
+import { ChannelAvatar } from "./components/ChannelAvatar";
+import { useChannelAvatars } from "./hooks/useChannelAvatars";
+import { youtubeBridge } from "@/lib/youtube-bridge";
 import { TwitchChat } from "./components/TwitchChat";
 import { twitchChannel, twitchPlayerUrl } from "@/lib/twitch-embed";
 import { TwitchDeviceLogin } from "./components/TwitchDeviceLogin";
@@ -14,7 +19,7 @@ import {
 
 type Platform = "YouTube" | "Twitch" | "VK Видео";
 type VideoItem = {
-  id: number | string; title: string; creator: string; channelId?: string; platform: Platform; category: string;
+  id: number | string; title: string; creator: string; channelId?: string; channelAvatar?: string; platform: Platform; category: string;
   views: string; age: string; duration: string; image: string; live?: boolean; tag?: string; url?: string; reason?: string;
 };
 type ApiStatus = { configured: boolean; message: string };
@@ -43,6 +48,7 @@ export default function HomePage() {
   const [submittedQuery, setSubmittedQuery] = useState("");
   const [searchPlatform, setSearchPlatform] = useState("Все платформы");
   const [nextCursor, setNextCursor] = useState("");
+  const [homeVideoCount, setHomeVideoCount] = useState(0);
   const [discovery, setDiscovery] = useState<VideoItem[]>([]);
   const [feedError, setFeedError] = useState("");
   const [subscriptionCursor, setSubscriptionCursor] = useState("");
@@ -67,6 +73,7 @@ export default function HomePage() {
   const [shortsMode, setShortsMode] = useState(false);
   const [shortsIndex, setShortsIndex] = useState(0);
   const [recommendations, setRecommendations] = useState<VideoItem[]>([]);
+  const [playerPersonal, setPlayerPersonal] = useState(false);
   const [playerQuery, setPlayerQuery] = useState("");
   const [history, setHistory] = useState<VideoItem[]>([]);
   const [playerSearching, setPlayerSearching] = useState(false);
@@ -269,6 +276,8 @@ export default function HomePage() {
     return matchesPlatform && matchesLive && matchesSaved && matchesHistory;
   });
 
+  const channelAvatars = useChannelAvatars([...filtered, ...recommendations, ...(playerVideo ? [playerVideo] : [])]);
+
   function changePlatform(value: string) {
     setMobileMenu(false);
     if (personalYoutubeHome && value === "Twitch") setActiveNav("В эфире");
@@ -337,6 +346,7 @@ export default function HomePage() {
     setShortsMode(isShort(v));
     setShortsIndex(Math.max(0, shorts.findIndex(item => item.id === v.id)));
     setRecommendations([]);
+    setPlayerPersonal(false);
     setPlayerSearching(true);
     setPlayerCursor("");
     setPlayerError("");
@@ -347,24 +357,45 @@ export default function HomePage() {
     setHistory((old) => [v, ...old.filter((item) => item.id !== v.id)].slice(0, 100));
     if (isShort(v) || v.platform === "Twitch") { setPlayerSearching(false); return; }
     try {
+      if (v.platform === "YouTube" && /^yt-[\w-]{11}$/.test(String(v.id))) {
+        const installed = await youtubeBridge("ping").catch(() => ({ installed: false }));
+        if (requestId !== playerRequest.current) return;
+        if (installed.installed) {
+          setPlayerPersonal(true);
+          const result = await youtubeBridge("related", { videoId: String(v.id).slice(3) });
+          if (requestId !== playerRequest.current) return;
+          setRecommendations(result.items || []);
+          setPlayerCursor(result.hasMore ? `bridge:${Date.now()}` : "");
+          if (result.message) setPlayerError(result.message);
+          return;
+        }
+      }
       const response = await fetch(`/api/search?q=${encodeURIComponent(v.title)}&platform=${encodeURIComponent(v.platform)}`);
       const body = await response.json();
       if (requestId !== playerRequest.current) return;
       if (!response.ok) throw new Error(body.error || "Не удалось загрузить рекомендации");
       setPlayerCursor(body.nextCursor || "");
       setRecommendations(((body.items ?? []) as VideoItem[]).filter((item) => item.id !== v.id));
-    } catch { if (requestId === playerRequest.current) setPlayerError("Не удалось загрузить рекомендации."); }
+    } catch (error) { if (requestId === playerRequest.current) setPlayerError(error instanceof Error ? error.message : "Не удалось загрузить рекомендации."); }
     finally { if (requestId === playerRequest.current) setPlayerSearching(false); }
   }
 
   async function searchInPlayer(append = false) {
     const q = append ? playerFeedQuery : playerQuery.trim();
-    if (!q) return;
+    if (!q && !(append && playerPersonal)) return;
     const requestId = ++playerRequest.current;
     const source = append ? playerFeedPlatform : playerVideo?.platform || "YouTube";
     setPlayerSearching(true);
     setPlayerError("");
     try {
+      if (append && playerPersonal && playerVideo) {
+        const result = await youtubeBridge("related", { videoId: String(playerVideo.id).slice(3), next: true, exclude: recommendations.map(v => v.id) });
+        if (requestId !== playerRequest.current) return;
+        setRecommendations(old => unique([...old, ...(result.items || [])]));
+        setPlayerCursor(result.hasMore ? `bridge:${Date.now()}` : "");
+        if (result.message) setPlayerError(result.message);
+        return;
+      }
       const params = new URLSearchParams({ q, platform: source });
       if (append && playerCursor) params.set("cursor", playerCursor);
       const response = await fetch(`/api/search?${params}`);
@@ -372,6 +403,7 @@ export default function HomePage() {
       if (requestId !== playerRequest.current) return;
       if (!response.ok) throw new Error(body.error || "Не удалось загрузить видео");
       if (Object.values(body.statuses || {}).some((status: unknown) => (status as ApiStatus).message !== "Подключено") && !body.items?.length) throw new Error("Платформа не смогла загрузить видео. Повтори запрос.");
+      setPlayerPersonal(false);
       setPlayerFeedQuery(q);
       setPlayerFeedPlatform(source);
       setPlayerCursor(body.nextCursor && (!append || body.nextCursor !== playerCursor) ? body.nextCursor : "");
@@ -493,24 +525,19 @@ export default function HomePage() {
 
             {activeNav === "Подписки" && twitchUser && <div className="channel-list-heading"><h3>Каналы Twitch в эфире</h3><button disabled={twitchLoading} onClick={() => void loadTwitch()}>{twitchLoading ? "Обновляем…" : "Обновить Twitch"}</button>{twitchMessage && <p role="status">{twitchMessage}</p>}</div>}
 
-            {personalYoutubeHome && !submittedQuery ? <section className="youtube-home-panel">
-              <h3>Твоя главная YouTube</h3>
-              <p>Эта персональная лента доступна на самом YouTube. Streamly не получает её и не заменяет общими видео.</p>
-              <a className="primary-button" href="https://www.youtube.com/" target="_blank" rel="noreferrer">Открыть мою главную YouTube ↗</a>
-              <p>Откроется YouTube в твоём браузере. Выбери там нужный аккаунт.</p>
-            </section> : filtered.length > 0 ? <>
+            {personalYoutubeHome && !submittedQuery ? <YouTubeHomeFeed onOpen={v => void openVideo(v)} paused={Boolean(playerVideo)} onCountChange={setHomeVideoCount}/> : filtered.length > 0 ? <>
               {selectedChannel && <div className="channel-heading"><h2>{selectedChannel.name}</h2><p>Канал · {filtered.length} видео из подписок/результатов</p><button onClick={() => setSelectedChannel(null)}>← Назад к каналам</button></div>}
               <div className="video-grid">
               {filtered.map((v) => <article className="video-card" key={v.id}>
                 <button className="thumbnail-button" onClick={() => openVideo(v)} aria-label={`Открыть ${v.title}`}>
-                  {/* Remote images are used in this prototype to simulate platform thumbnails. */}
+                  {/* Thumbnails come from the platform metadata. */}
                   <img className="thumbnail" src={v.image} alt="" />
                   <span className={`source-badge ${platformClass[v.platform]}`}>{v.platform === "YouTube" ? "▶ YouTube" : v.platform === "Twitch" ? "▰ Twitch" : "ᴠκ Видео"}</span>
                   <span className={`duration ${v.live ? "duration-live" : ""}`}>{v.duration}</span>
                   <span className="thumbnail-play"><MonitorPlay size={24}/></span>
                 </button>
                 <div className="video-info">
-                  <button className="creator-avatar" onClick={() => {setSelectedChannel({id: v.channelId || v.creator, name: v.creator}); setSubmittedQuery(""); setQuery(""); setActiveNav("Канал");}}>{v.creator.slice(0,1).toUpperCase()}</button>
+                  <button className="creator-avatar" onClick={() => {setSelectedChannel({id: v.channelId || v.creator, name: v.creator}); setSubmittedQuery(""); setQuery(""); setActiveNav("Канал");}}><ChannelAvatar src={v.channelAvatar || channelAvatars[v.id]} name={v.creator}/></button>
                   <div className="video-copy"><button className="video-title" onClick={() => openVideo(v)}>{v.title}</button><button className="creator-name" onClick={() => {setSelectedChannel({id: v.channelId || v.creator, name: v.creator}); setSubmittedQuery(""); setQuery(""); setActiveNav("Канал");}}>{v.creator}</button><button className="creator-follow" style={{display:"block",border:0,background:"transparent",color:"var(--accent, #b5a0ff)",padding:"3px 0",cursor:"pointer",fontSize:12}} onClick={() => toggleFollow(v.creator, v.channelId)}>{following.includes(v.channelId || v.creator) ? "Вы подписаны" : "+ Следить в Streamly"}</button><div className="video-meta"><span>{v.views}</span><span className="meta-dot">·</span><span>{v.age}</span></div></div>
                   <button className={`save-button ${saved.includes(v.id) ? "is-saved" : ""}`} aria-label="Сохранить видео" onClick={() => toggleSave(v.id)}>{saved.includes(v.id) ? <Heart size={17} fill="currentColor"/> : <Bookmark size={17}/>}</button>
                 </div>
@@ -522,7 +549,7 @@ export default function HomePage() {
             {feedCursor && <div className="load-more-wrap" ref={feedEnd} data-testid="feed-end"><button className="load-more" disabled={feedLoading} onClick={loadMoreFeed}><Compass size={17}/> {feedLoading ? "Загружаем…" : feedError ? "Повторить загрузку" : "Загрузить ещё"}</button></div>}
             {feedLoading && <p role="status">Загружаем видео…</p>}
           </section>
-          <footer><span className="footer-brand">streamly<span>.</span></span><span>Один поток. Больше открытий.</span><span className="demo-label"><span/> {searching ? "Загружаем видео…" : `${filtered.length} видео в ленте`}</span></footer>
+          <footer><span className="footer-brand">streamly<span>.</span></span><span>Один поток. Больше открытий.</span><span className="demo-label"><span/> {searching ? "Загружаем видео…" : `${personalYoutubeHome && !submittedQuery ? homeVideoCount : filtered.length} видео в ленте`}</span></footer>
         </div>
       </section>
       {playerVideo && <div className={`player-overlay ${shortsMode ? "shorts-player-overlay" : ""}`} role="dialog" aria-modal="true" aria-label={shortsMode ? "Просмотр Shorts" : "Видеоплеер"} onWheel={(e) => {
@@ -533,7 +560,7 @@ export default function HomePage() {
         if (!shortsMode) return;
         const delta = shortGesture.current.touchY - e.changedTouches[0].clientY;
         if (Math.abs(delta) > 40) moveShort(delta > 0 ? 1 : -1);
-      }}><div className={`player-modal ${shortsMode ? "shorts-player-modal" : playerVideo.platform === "Twitch" ? "twitch-player-modal" : ""}`}>{shortsMode ? <><button className="shorts-close" aria-label="Закрыть Shorts" onClick={() => setPlayerVideo(null)}><X size={22}/></button><div className="shorts-stage">{playerVideo.platform === "YouTube" && String(playerVideo.id).startsWith("yt-") ? <iframe className="shorts-frame" src={`https://www.youtube-nocookie.com/embed/${String(playerVideo.id).slice(3)}?autoplay=1&controls=1&rel=0&modestbranding=1`} title={playerVideo.title} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen /> : <div className="player-unavailable"><MonitorPlay size={36}/><p>Этот Short нельзя встроить.</p><a href={playerVideo.url} target="_blank" rel="noreferrer">Открыть оригинал ↗</a></div>}<div className="shorts-side-actions"><button onClick={() => notify("Лайк выполняется на стороне YouTube.")}>♡<small>Нравится</small></button><button onClick={() => notify("Комментарии доступны на YouTube.")}>☰<small>Комментарии</small></button><button onClick={() => { if (playerVideo.url) void navigator.clipboard?.writeText(playerVideo.url); notify("Ссылка на видео скопирована, если браузер разрешил доступ."); }}>↗<small>Поделиться</small></button></div><div className="shorts-caption"><strong>{playerVideo.creator}</strong><span>{playerVideo.title}</span><small>{playerVideo.views}</small></div></div><div className="shorts-nav"><button disabled={shortsIndex <= 0} onClick={() => { const v = shorts[shortsIndex-1]; if(v){setShortsIndex(shortsIndex-1); void openVideo(v);} }}>↑ Предыдущий</button><button disabled={shortsIndex >= shorts.length-1 && !feedCursor} onClick={() => moveShort(1)}>Следующий ↓</button></div></> : <><div className="player-top"><strong>{playerVideo.title}</strong><button className="icon-button" aria-label="Закрыть плеер" onClick={() => setPlayerVideo(null)}><X size={22}/></button></div><div className="player-layout"><div className="player-main">{playerVideo.platform === "YouTube" && String(playerVideo.id).startsWith("yt-") ? <iframe className="player-frame" src={`https://www.youtube-nocookie.com/embed/${String(playerVideo.id).slice(3)}?autoplay=1&rel=0`} title={playerVideo.title} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen /> : playerVideo.platform === "Twitch" && twitchChannel(playerVideo.url) ? <iframe className="player-frame" src={twitchPlayerUrl(twitchChannel(playerVideo.url) || "", typeof window === "undefined" ? "localhost" : window.location.hostname)} title={playerVideo.title} allow="autoplay; fullscreen; picture-in-picture" allowFullScreen /> : <div className="player-unavailable"><MonitorPlay size={36}/><p>Встроенный плеер для этого видео недоступен.</p><a href={playerVideo.url} target="_blank" rel="noreferrer">Открыть оригинал на {playerVideo.platform} ↗</a></div>}<h2>{playerVideo.title}</h2><div className="player-channel-row"><p className="player-creator">{playerVideo.creator} · {playerVideo.views}</p><button className={`follow-button ${following.includes(playerVideo.channelId || playerVideo.creator) ? "following" : ""}`} onClick={() => toggleFollow(playerVideo.creator, playerVideo.channelId)}>{following.includes(playerVideo.channelId || playerVideo.creator) ? "✓ Вы подписаны" : "+ Следить в Streamly"}</button></div></div>{playerVideo.platform === "Twitch" ? (twitchChannel(playerVideo.url) ? <TwitchChat channel={twitchChannel(playerVideo.url)!}/> : <aside className="twitch-chat-unavailable"><p>Не удалось определить канал чата.</p></aside>) : <aside className="recommendations"><h3>Похожие видео и поиск</h3><form className="player-search" onSubmit={(e) => {e.preventDefault(); void searchInPlayer();}}><Search size={16}/><input value={playerQuery} onChange={(e) => setPlayerQuery(e.target.value)} placeholder="Найти видео..."/><button type="submit" disabled={playerSearching}>{playerSearching ? "…" : "Найти"}</button></form>{recommendations.map((item) => <button key={item.id} className="recommendation" onClick={() => void openVideo(item)}><img src={item.image} alt=""/><span><strong>{item.title}</strong><small>{item.creator} · {item.platform}</small></span></button>)}{playerError && <p role="alert">{playerError}</p>}{playerCursor && <div ref={playerEnd} data-testid="player-end"><button className="load-more" disabled={playerSearching} onClick={() => void searchInPlayer(true)}>{playerSearching ? "Загружаем…" : playerError ? "Повторить загрузку" : "Ещё видео"}</button></div>}{recommendations.length === 0 && !playerSearching && !playerError && <p className="recommendation-empty">Похожие видео появятся после загрузки результатов API.</p>}</aside>}</div></>}</div></div>}
+      }}><div className={`player-modal ${shortsMode ? "shorts-player-modal" : playerVideo.platform === "Twitch" ? "twitch-player-modal" : ""}`}>{shortsMode ? <><button className="shorts-close" aria-label="Закрыть Shorts" onClick={() => setPlayerVideo(null)}><X size={22}/></button><div className="shorts-stage">{playerVideo.platform === "YouTube" && String(playerVideo.id).startsWith("yt-") ? <iframe className="shorts-frame" src={`https://www.youtube-nocookie.com/embed/${String(playerVideo.id).slice(3)}?autoplay=1&controls=1&rel=0&modestbranding=1`} title={playerVideo.title} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen /> : <div className="player-unavailable"><MonitorPlay size={36}/><p>Этот Short нельзя встроить.</p><a href={playerVideo.url} target="_blank" rel="noreferrer">Открыть оригинал ↗</a></div>}<div className="shorts-side-actions"><button onClick={() => notify("Лайк выполняется на стороне YouTube.")}>♡<small>Нравится</small></button><button onClick={() => notify("Комментарии доступны на YouTube.")}>☰<small>Комментарии</small></button><button onClick={() => { if (playerVideo.url) void navigator.clipboard?.writeText(playerVideo.url); notify("Ссылка на видео скопирована, если браузер разрешил доступ."); }}>↗<small>Поделиться</small></button></div><div className="shorts-caption"><strong>{playerVideo.creator}</strong><span>{playerVideo.title}</span><small>{playerVideo.views}</small></div></div><div className="shorts-nav"><button disabled={shortsIndex <= 0} onClick={() => { const v = shorts[shortsIndex-1]; if(v){setShortsIndex(shortsIndex-1); void openVideo(v);} }}>↑ Предыдущий</button><button disabled={shortsIndex >= shorts.length-1 && !feedCursor} onClick={() => moveShort(1)}>Следующий ↓</button></div></> : <><div className="player-top"><strong>{playerVideo.title}</strong><button className="icon-button" aria-label="Закрыть плеер" onClick={() => setPlayerVideo(null)}><X size={22}/></button></div><div className="player-layout"><div className="player-main">{playerVideo.platform === "YouTube" && String(playerVideo.id).startsWith("yt-") ? <iframe className="player-frame" src={`https://www.youtube-nocookie.com/embed/${String(playerVideo.id).slice(3)}?autoplay=1&rel=0`} title={playerVideo.title} allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share" allowFullScreen /> : playerVideo.platform === "Twitch" && twitchChannel(playerVideo.url) ? <iframe className="player-frame" src={twitchPlayerUrl(twitchChannel(playerVideo.url) || "", typeof window === "undefined" ? "localhost" : window.location.hostname)} title={playerVideo.title} allow="autoplay; fullscreen; picture-in-picture" allowFullScreen /> : <div className="player-unavailable"><MonitorPlay size={36}/><p>Встроенный плеер для этого видео недоступен.</p><a href={playerVideo.url} target="_blank" rel="noreferrer">Открыть оригинал на {playerVideo.platform} ↗</a></div>}<h2>{playerVideo.title}</h2><div className="player-channel-row"><div className="player-channel-identity"><ChannelAvatar src={playerVideo.channelAvatar || channelAvatars[playerVideo.id]} name={playerVideo.creator}/><p className="player-creator">{playerVideo.creator} · {playerVideo.views}</p></div><button className={`follow-button ${following.includes(playerVideo.channelId || playerVideo.creator) ? "following" : ""}`} onClick={() => toggleFollow(playerVideo.creator, playerVideo.channelId)}>{following.includes(playerVideo.channelId || playerVideo.creator) ? "✓ Вы подписаны" : "+ Следить в Streamly"}</button></div>{playerVideo.platform === "YouTube" && /^yt-[\w-]{11}$/.test(String(playerVideo.id)) && <YouTubeComments key={playerVideo.id} videoId={String(playerVideo.id).slice(3)}/>}</div>{playerVideo.platform === "Twitch" ? (twitchChannel(playerVideo.url) ? <TwitchChat channel={twitchChannel(playerVideo.url)!}/> : <aside className="twitch-chat-unavailable"><p>Не удалось определить канал чата.</p></aside>) : <aside className="recommendations"><h3>{playerPersonal ? "Твои рекомендации YouTube" : "Похожие видео и поиск"}</h3>{playerPersonal && <button className="load-more" disabled={playerSearching} onClick={() => { if (playerVideo) void openVideo(playerVideo); }}>Обновить рекомендации</button>}<form className="player-search" onSubmit={(e) => {e.preventDefault(); void searchInPlayer();}}><Search size={16}/><input value={playerQuery} onChange={(e) => setPlayerQuery(e.target.value)} placeholder="Найти видео..."/><button type="submit" disabled={playerSearching}>{playerSearching ? "…" : "Найти"}</button></form>{recommendations.map((item) => <button key={item.id} className="recommendation" onClick={() => void openVideo(item)}><img src={item.image} alt=""/><span><strong>{item.title}</strong><small className="recommendation-creator"><ChannelAvatar src={item.channelAvatar || channelAvatars[item.id]} name={item.creator}/>{item.creator} · {item.platform}</small></span></button>)}{playerError && <p role="alert">{playerError}</p>}{playerCursor && <div ref={playerEnd} data-testid="player-end"><button className="load-more" disabled={playerSearching} onClick={() => void searchInPlayer(true)}>{playerSearching ? "Загружаем…" : playerError ? "Повторить загрузку" : "Ещё видео"}</button></div>}{recommendations.length === 0 && !playerSearching && !playerError && <p className="recommendation-empty">Похожие видео появятся после загрузки результатов API.</p>}</aside>}</div></>}</div></div>}
       {toast && <div className="toast"><Check size={17}/>{toast}<button aria-label="Закрыть" onClick={() => setToast("")}><X size={15}/></button></div>}
     </main>
   );

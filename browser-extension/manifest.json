@@ -1,0 +1,13 @@
+{
+  "manifest_version": 3,
+  "name": "Streamly — моя лента YouTube",
+  "version": "1.0.0",
+  "description": "Передаёт видимые рекомендации из твоей вкладки YouTube в локальный Streamly. Без передачи cookies и паролей.",
+  "permissions": [],
+  "host_permissions": ["https://www.youtube.com/*"],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    { "matches": ["https://www.youtube.com/*"], "js": ["youtube.js"], "run_at": "document_idle" },
+    { "matches": ["http://localhost/*", "http://127.0.0.1/*"], "js": ["streamly.js"], "run_at": "document_start" }
+  ]
+}
