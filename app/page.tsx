@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { twitchLoginErrors, twitchOAuthStages, twitchOAuthVersion } from "@/lib/twitch-oauth";
+import { TwitchDeviceLogin } from "./components/TwitchDeviceLogin";
 import { useInfiniteScroll } from "./hooks/useInfiniteScroll";
 import {
   Activity, Bell, Bookmark, Check, ChevronDown, Compass,
@@ -26,6 +27,7 @@ export default function HomePage() {
   const [activeNav, setActiveNav] = useState("Для тебя");
   const [platform, setPlatform] = useState("Все платформы");
   const [query, setQuery] = useState("");
+  const [showTwitchDevice, setShowTwitchDevice] = useState(false);
   const [twitchUser, setTwitchUser] = useState<{id: string; login: string; displayName: string; avatar: string} | null>(null);
   const [twitchFollowing, setTwitchFollowing] = useState<VideoItem[]>([]);
   const [twitchCursor, setTwitchCursor] = useState("");
@@ -108,6 +110,12 @@ export default function HomePage() {
     } catch (error) { setTwitchMessage(error instanceof Error ? error.message : "Ошибка Twitch"); if (cursor) setFeedError("Не удалось загрузить следующую страницу Twitch."); }
     finally { if (requestId === twitchRequest.current) setTwitchLoading(false); }
   }, []);
+
+  const finishDeviceLogin = useCallback(async () => {
+    await loadTwitch();
+    setTwitchLoginError("");
+    setTwitchLoginDiagnostic("");
+  }, [loadTwitch]);
 
   async function disconnectTwitch() {
     try {
@@ -414,7 +422,7 @@ export default function HomePage() {
         </a>
         <div className="workspace-label">ТВОЁ ПРОСТРАНСТВО</div>
         <a href="/api/youtube/auth" className="nav-item" style={{margin:"8px 0",textDecoration:"none",color:"inherit"}}><span className="platform-icon yt">▶</span>{youtubeConnected ? "YouTube подключён" : "Подключить YouTube"}</a>
-        {twitchUser ? <div className="twitch-account"><span className="platform-icon tw">▰</span><span>Twitch · {twitchUser.displayName || twitchUser.login}</span><button onClick={() => void disconnectTwitch()} aria-label="Отключить Twitch">Отключить</button></div> : <a href="/api/twitch/auth" className="nav-item" style={{textDecoration:"none",color:"inherit"}}><span className="platform-icon tw">▰</span>Подключить Twitch</a>}
+        {twitchUser ? <div className="twitch-account"><span className="platform-icon tw">▰</span><span>Twitch · {twitchUser.displayName || twitchUser.login}</span><button onClick={() => void disconnectTwitch()} aria-label="Отключить Twitch">Отключить</button></div> : <button onClick={() => setShowTwitchDevice(true)} className="nav-item" aria-label="Подключить Twitch"><span className="platform-icon tw">▰</span>Подключить Twitch</button>}
         <nav className="main-nav">
           {navItems.map(({ label, icon: Icon }) => (
             <button key={label} className={`nav-item ${activeNav === label ? "active" : ""}`} onClick={() => { setActiveNav(label); setSelectedChannel(null); setSubmittedQuery(""); setQuery(""); ++searchRequest.current; setSearching(false); setMobileMenu(false); }}>
@@ -431,7 +439,7 @@ export default function HomePage() {
         <button className={`platform-row ${platform === "YouTube" ? "platform-selected" : ""}`} onClick={() => changePlatform(platform === "YouTube" ? "Все платформы" : "YouTube")}><span className="platform-icon yt">▶</span><span>YouTube</span><span className={`connection-dot ${apiStatuses["YouTube"]?.message === "Подключено" ? "connected" : "unconfigured"}`}/></button>
         <button className={`platform-row ${platform === "Twitch" ? "platform-selected" : ""}`} onClick={() => changePlatform(platform === "Twitch" ? "Все платформы" : "Twitch")}><span className="platform-icon tw">▰</span><span>Twitch</span><span className={`connection-dot ${apiStatuses["Twitch"]?.message === "Подключено" ? "connected" : "unconfigured"}`}/></button>
         <button className={`platform-row ${platform === "VK Видео" ? "platform-selected" : ""}`} onClick={() => changePlatform(platform === "VK Видео" ? "Все платформы" : "VK Видео")}><span className="platform-icon vk">ᴠκ</span><span>VK Видео</span><span className={`connection-dot ${apiStatuses["VK Видео"]?.message === "Подключено" ? "connected" : "unconfigured"}`}/></button>
-        <a className="connect-platform" href="/api/twitch/auth"><span>+</span> Подключить Twitch</a>
+        <button className="connect-platform" onClick={() => setShowTwitchDevice(true)}><span>+</span> Подключить Twitch</button>
         <div className="sidebar-bottom">
           <button className="profile-row" onClick={() => notify("Профиль пользователя — демонстрационный режим.")}>
             <span className="avatar">S</span><span className="profile-info"><strong>Мой профиль</strong><small>Streamly</small></span><MoreHorizontal size={19}/>
@@ -452,7 +460,8 @@ export default function HomePage() {
         </header>
 
         <div className="content">
-          {twitchLoginError && <div className="login-error" role="alert"><strong>Не удалось подключить Twitch</strong><p>{twitchLoginError}</p><p><code>{twitchLoginDiagnostic}</code></p><a href="/api/twitch/auth">Повторить вход</a><a href="/api/twitch/diagnostics" target="_blank" rel="noreferrer" style={{marginLeft:16}}>Диагностика без ключей ↗</a><button onClick={() => setTwitchLoginError("")} aria-label="Закрыть ошибку Twitch">×</button></div>}
+          {showTwitchDevice && <TwitchDeviceLogin onConnected={finishDeviceLogin} onClose={() => setShowTwitchDevice(false)}/>}
+          {twitchLoginError && <div className="login-error" role="alert"><strong>Не удалось подключить Twitch</strong><p>{twitchLoginError}</p><p><code>{twitchLoginDiagnostic}</code></p><button className="device-fallback-button" onClick={() => setShowTwitchDevice(true)}>Войти по коду Twitch</button><a href="/api/twitch/auth">Повторить обычный вход</a><a href="/api/twitch/diagnostics" target="_blank" rel="noreferrer" style={{marginLeft:16}}>Диагностика без ключей ↗</a><button onClick={() => setTwitchLoginError("")} aria-label="Закрыть ошибку Twitch">×</button></div>}
           <section className="welcome-row">
             <div><div className="eyebrow"><span className="eyebrow-spark">✳</span> ТВОЙ МЕДИА-ЦЕНТР</div><h1>Всё интересное.<br/><span>В одном потоке.</span></h1><p className="welcome-copy">Видео и стримы с любимых платформ — собраны для тебя.</p></div>
             <div className="welcome-art" aria-hidden="true"><div className="art-orbit orbit-one"/><div className="art-orbit orbit-two"/><div className="art-core"><Activity size={39}/></div><div className="float-tile tile-play"><Video size={20}/></div><div className="float-tile tile-live"><span/> LIVE</div><div className="float-tile tile-spark"><Sparkles size={17}/></div></div>
@@ -469,7 +478,7 @@ export default function HomePage() {
             </div>}
 
             {Object.keys(apiStatuses).length > 0 && <div style={{display:"flex",gap:8,flexWrap:"wrap",margin:"8px 0 16px",fontSize:12,color:"var(--muted, #999)"}}>{Object.entries(apiStatuses).map(([name,status]) => <span key={name} style={{border:"1px solid rgba(255,255,255,.12)",borderRadius:999,padding:"6px 10px"}}><span style={{color:status.configured && status.message === "Подключено" ? "#55d6a0" : "#f0b36c"}}>●</span> {name}: {status.message}</span>)}</div>}
-            {activeNav === "Подписки" && !youtubeConnected && !twitchUser && <div className="empty-state"><h3>Подключи YouTube или Twitch</h3><p>Streamly загрузит подписки и будет подгружать видео при прокрутке.</p><a className="primary-button" href="/api/youtube/auth">Подключить YouTube</a><a className="primary-button" href="/api/twitch/auth">Подключить Twitch</a>{subscriptionMessage && <p>{subscriptionMessage}</p>}</div>}
+            {activeNav === "Подписки" && !youtubeConnected && !twitchUser && <div className="empty-state"><h3>Подключи YouTube или Twitch</h3><p>Streamly загрузит подписки и будет подгружать видео при прокрутке.</p><a className="primary-button" href="/api/youtube/auth">Подключить YouTube</a><button className="primary-button" onClick={() => setShowTwitchDevice(true)}>Подключить Twitch</button>{subscriptionMessage && <p>{subscriptionMessage}</p>}</div>}
               {activeNav === "Подписки" && !selectedChannel && youtubeConnected && <section className="subscribed-channels">
                 <div className="channel-list-heading"><h3>Твои каналы</h3><span>{subscriptionChannels.length} подписок</span><button onClick={() => void loadYouTubeSubscriptions(true)} disabled={loadingSubscriptions}>{loadingSubscriptions ? "Обновляем…" : "Обновить"}</button></div>
                 {subscriptionMessage && <p className="subscription-message" role="status">{subscriptionMessage}</p>}

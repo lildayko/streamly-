@@ -35,7 +35,7 @@ test('ошибка входа Twitch остаётся видимой и объя
   await page.route('**/api/youtube/recommendations*', route => route.fulfill({ status: 401, json: {} }));
   await page.goto('/?twitch=invalid_client');
   await expect(page.locator('.login-error[role=alert]')).toContainText('Client ID или Client Secret');
-  await expect(page.getByRole('link', { name: 'Повторить вход' })).toHaveAttribute('href', '/api/twitch/auth');
+  await expect(page.getByRole('link', { name: 'Повторить обычный вход' })).toHaveAttribute('href', '/api/twitch/auth');
 });
 
 test('мгновенный отказ authorize показывает код и ссылку на диагностику, скрывая сырые параметры', async ({ page }) => {

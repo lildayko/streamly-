@@ -22,8 +22,8 @@ export async function twitchSession(request: NextRequest): Promise<TwitchSession
   } catch (error) {
     if (!(error instanceof TwitchAccountError) || error.status !== 401 || !refresh) throw error;
     const clientId = process.env.TWITCH_CLIENT_ID, secret = process.env.TWITCH_CLIENT_SECRET;
-    if (!clientId || !secret) throw new TwitchAccountError('Настрой TWITCH_CLIENT_ID и TWITCH_CLIENT_SECRET.', 503);
-    const response = await fetch('https://id.twitch.tv/oauth2/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: clientId, client_secret: secret, grant_type: 'refresh_token', refresh_token: refresh }), cache: 'no-store', signal: AbortSignal.timeout(15000) });
+    if (!clientId) throw new TwitchAccountError('Настрой TWITCH_CLIENT_ID.', 503);
+    const response = await fetch('https://id.twitch.tv/oauth2/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ client_id: clientId, ...(secret ? { client_secret: secret } : {}), grant_type: 'refresh_token', refresh_token: refresh }), cache: 'no-store', signal: AbortSignal.timeout(15000) });
     const body = await response.json();
     if (!response.ok || !body.access_token) throw new TwitchAccountError('Не удалось обновить доступ. Подключи Twitch заново.', response.status >= 500 ? 502 : 401);
     access = body.access_token;
